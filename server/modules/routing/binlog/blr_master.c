@@ -48,6 +48,7 @@
  *					It's no longer using QUERY_EVENT with BEGIN	
  * 25/09/2015	Massimiliano Pinto	Addition of lastEventReceived for slaves
  * 23/10/15	Markus Makela		Added current_safe_event
+ * 12/11/15	Massimiliano Pinto	Added blr_send_semisync_ack
  *
  * @endverbatim
  */
@@ -102,6 +103,7 @@ extern int blr_check_heartbeat(ROUTER_INSTANCE *router);
 extern char * blr_last_event_description(ROUTER_INSTANCE *router);
 static void blr_log_identity(ROUTER_INSTANCE *router);
 static void blr_distribute_error_message(ROUTER_INSTANCE *router, char *message, char *state, unsigned int err_code);
+static int blr_send_semisync_ack (ROUTER_INSTANCE *router, uint64_t pos);
 
 static int keepalive = 1;
 
@@ -2263,3 +2265,52 @@ ROUTER_SLAVE    *slave;
 	spinlock_release(&router->lock);
 }
 
+/**
+ * Send a MySQL Replication Semi-Sync ACK to the master server.
+ *
+ * @param router The router instance.
+ * @param pos The binlog position for the ACK reply.
+ * @return 1 if the packect is sent, 0 on errors
+*/
+static int blr_send_semisync_ack (ROUTER_INSTANCE *router, uint64_t pos) {
+    int seqno = 0;
+    int semi_sync_indicator = 0xef;
+    GWBUF *buf;
+    int len;
+    uint8_t *data;
+
+    /* payload: semi-sync indicator + b bytes log position */
+    len = strlen(router->binlog_name) + 1 + 8;
+
+    /* add network header to ibufer size */
+    if ((buf = gwbuf_alloc(len+4)) == NULL)
+        return 0;
+
+    fprintf(stderr, "Sending Semy-Sync ACK for Binlog File is %s, pos %llu\n", router->binlog_name, (unsigned long long)router->current_pos);
+    fprintf(stderr, "Sending Semy-Sync ACK for Binlog File is %s, pos %llu\n", router->binlog_name, (unsigned long long)router->last_written);
+
+    data = GWBUF_DATA(buf);
+
+    /* Set Payload length */
+    encode_value(&data[0], len, 24);
+
+    /* Set Sequence ID */
+    data[3] = 0;
+
+    /* Set semi-sync indicator */
+    data[4] = semi_sync_indicator;
+
+    /**
+     * Next Bytes are: 8 bytes log position + len bin_log filename
+     */
+
+    /* Set Log Position */
+    encode_value(&data[5], pos, 64);
+
+    /* Set Binlog filename */
+    strncpy((char *)&data[13], router->binlog_name, BINLOG_FNAMELEN);
+
+    router->master->func.write(router->master, buf);
+
+    return 1;
+}
