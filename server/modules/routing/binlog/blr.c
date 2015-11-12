@@ -276,6 +276,7 @@ char		task_name[BLRM_TASK_NAME_LEN+1] = "";
 	inst->binlogdir = NULL;
 	inst->heartbeat = BLR_HEARTBEAT_DEFAULT_INTERVAL;
 	inst->mariadb10_compat = false;
+	inst->request_semisync = false;
 
 	inst->user = strdup(service->credentials.name);
 	inst->password = strdup(service->credentials.authdata);

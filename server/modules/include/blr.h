@@ -446,6 +446,8 @@ typedef struct router_instance {
 	char		  *set_master_uuid; /*< Send custom Master UUID to slaves */
 	char		  *set_master_server_id; /*< Send custom Master server_id to slaves */
 	int		  send_slave_heartbeat; /*< Enable sending heartbeat to slaves */
+	int		  master_semisync; /*< Does the master provide semisync replication */
+	int		  request_semisync; /*< Request master semisync replication */
 	struct router_instance	*next;
 } ROUTER_INSTANCE;
 
@@ -472,18 +474,21 @@ typedef struct router_instance {
 #define BLRM_SELECTHOSTNAME	0x0011
 #define BLRM_MAP		0x0012
 #define	BLRM_REGISTER		0x0013
-#define	BLRM_BINLOGDUMP		0x0014
-#define	BLRM_SLAVE_STOPPED	0x0015
-#define	BLRM_MARIADB10		0x0016
+#define	BLRM_CHECK_SEMISYNC	0x0014
+#define	BLRM_REQUEST_SEMISYNC	0x0015
+#define	BLRM_BINLOGDUMP		0x0016
+#define	BLRM_SLAVE_STOPPED	0x0017
+#define	BLRM_MARIADB10		0x0018
+#define	BLRM_SEND_SEMISYNC_ACK0	0x0019
 
-#define BLRM_MAXSTATE		0x0016
+#define BLRM_MAXSTATE		0x0019
 
 static char *blrm_states[] = { "Unconfigured", "Unconnected", "Connecting", "Authenticated", "Timestamp retrieval",
 	"Server ID retrieval", "HeartBeat Period setup", "binlog checksum config",
 	"binlog checksum rerieval", "GTID Mode retrieval", "Master UUID retrieval",
 	"Set Slave UUID", "Set Names latin1", "Set Names utf8", "select 1",
 	"select version()", "select @@version_comment", "select @@hostname",
-	"select @@max_allowed_packet", "Register slave", "Binlog Dump", "Slave stopped", "Set MariaDB slave capability" };
+	"select @@max_allowed_packet", "Register slave", "Binlog Dump", "Slave stopped", "Set MariaDB slave capability", "Check master Semi-Sync", "Request Semi-Sync replication", "Send Semi-Sync ACK" };
 
 #define BLRS_CREATED		0x0000
 #define BLRS_UNREGISTERED	0x0001

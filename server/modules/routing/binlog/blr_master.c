@@ -104,6 +104,7 @@ extern char * blr_last_event_description(ROUTER_INSTANCE *router);
 static void blr_log_identity(ROUTER_INSTANCE *router);
 static void blr_distribute_error_message(ROUTER_INSTANCE *router, char *message, char *state, unsigned int err_code);
 static int blr_send_semisync_ack (ROUTER_INSTANCE *router, uint64_t pos);
+static int blr_get_master_semisync(GWBUF *buf);
 
 static int keepalive = 1;
 
@@ -645,6 +646,23 @@ char	task_name[BLRM_TASK_NAME_LEN + 1] = "";
 		router->master->func.write(router->master, buf);
 		break;
 	case BLRM_REGISTER:
+		/* Discard master reply to COM_REGISTER_SLAVE */
+		gwbuf_consume(buf, GWBUF_LENGTH(buf));
+
+		/* Check whether master has semi-sync plugin installed */
+		buf = blr_make_query("SHOW VARIABLES LIKE 'rpl_semi_sync_master_enabled'");
+		router->master_state = BLRM_CHECK_SEMISYNC;
+		router->master->func.write(router->master, buf);
+		break;
+	case BLRM_CHECK_SEMISYNC:
+		/* Get master semi-sync installed, enabled, disabled */
+		router->master_semisync = blr_get_master_semisync(buf);
+
+                fprintf(stderr, "Master Semi-Sync is %d\n", router->master_semisync);
+
+		gwbuf_consume(buf, GWBUF_LENGTH(buf));
+		router->master_state = BLRM_REQUEST_SEMISYNC;
+	case BLRM_REQUEST_SEMISYNC:
 		// Request a dump of the binlog file
 		buf = blr_make_binlog_dump(router);
 		router->master_state = BLRM_BINLOGDUMP;
@@ -1585,13 +1603,21 @@ MYSQL_session	*auth_info;
 	return auth_info;
 }
 
-/** Actions that can be taken when an event is being distributed to the slaves*/
+/** Actions that can be taken when an event is being distributed to the slaves */
 typedef enum
 {
     SLAVE_SEND_EVENT, /*< Send the event to the slave */
     SLAVE_FORCE_CATCHUP, /*< Force the slave into catchup mode */
     SLAVE_EVENT_ALREADY_SENT /*< The slave already has the event, don't send it */
 } slave_event_action_t;
+
+/** Master Semi-Sync capability */
+typedef enum
+{
+    MASTER_SEMISYNC_NOT_AVAILABLE, /*< Semi-Sync replication not available */
+    MASTER_SEMISYNC_DISABLED, /*< Semi-Sync is disabled */
+    MASTER_SEMISYNC_ENABLED /*< Semi-Sync is enabled */
+} master_semisync_capability_t;
 
 /**
  * Distribute the binlog record we have just received to all the registered slaves.
@@ -2271,7 +2297,7 @@ ROUTER_SLAVE    *slave;
  * @param router The router instance.
  * @param pos The binlog position for the ACK reply.
  * @return 1 if the packect is sent, 0 on errors
-*/
+ */
 static int blr_send_semisync_ack (ROUTER_INSTANCE *router, uint64_t pos) {
     int seqno = 0;
     int semi_sync_indicator = 0xef;
@@ -2285,9 +2311,6 @@ static int blr_send_semisync_ack (ROUTER_INSTANCE *router, uint64_t pos) {
     /* add network header to ibufer size */
     if ((buf = gwbuf_alloc(len+4)) == NULL)
         return 0;
-
-    fprintf(stderr, "Sending Semy-Sync ACK for Binlog File is %s, pos %llu\n", router->binlog_name, (unsigned long long)router->current_pos);
-    fprintf(stderr, "Sending Semy-Sync ACK for Binlog File is %s, pos %llu\n", router->binlog_name, (unsigned long long)router->last_written);
 
     data = GWBUF_DATA(buf);
 
@@ -2313,4 +2336,32 @@ static int blr_send_semisync_ack (ROUTER_INSTANCE *router, uint64_t pos) {
     router->master->func.write(router->master, buf);
 
     return 1;
+}
+
+/**
+ * Check the master semisync capability.
+ *
+ * @param buf The GWBUF data with master reply.
+ * @return Semisync value: non available, enabled, disabled
+ */
+static int blr_get_master_semisync(GWBUF *buf)
+{
+    char *key;
+    char *val = NULL;
+    int master_semisync = MASTER_SEMISYNC_NOT_AVAILABLE;
+
+    key = blr_extract_column(buf, 1);
+    if (key && strlen(key))
+        val = blr_extract_column(buf, 2);
+    free(key);
+
+    if (val) {
+        if (strncasecmp(val, "ON", 4) == 0)
+            master_semisync = MASTER_SEMISYNC_ENABLED;
+        else
+            master_semisync = MASTER_SEMISYNC_DISABLED;
+    }
+    free(val);
+
+    return master_semisync;
 }
