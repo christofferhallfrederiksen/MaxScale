@@ -2040,15 +2040,8 @@ blr_slave_binlog_dump(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave, GWBUF *queue
                slave->serverid,
                slave->binlogfile, (unsigned long)slave->binlog_pos);
 
-    if (slave->binlog_pos != router->binlog_position ||
-        strcmp(slave->binlogfile, router->binlog_name) != 0)
-    {
-        spinlock_acquire(&slave->catch_lock);
-        slave->cstate &= ~CS_UPTODATE;
-        slave->cstate |= CS_EXPECTCB;
-        spinlock_release(&slave->catch_lock);
-        poll_fake_write_event(slave->dcb);
-    }
+    poll_fake_write_event(slave->dcb);
+   
     return rval;
 }
 
@@ -2157,8 +2150,23 @@ blr_slave_catchup(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave, bool large)
     int do_return;
 
     spinlock_acquire(&router->binlog_lock);
+    spinlock_acquire(&slave->catch_lock);
 
     do_return = 0;
+
+    /* This is just a check being logged */
+    if ((slave->cstate & CS_WAIT_DATA) != 0)
+    {
+         /* cstate has CS_BUSY and possibly the CS_WAIT_DATA
+          * That's becuase dcb_drain_writeq() is still calling
+          * callback routine for unwritten data
+          * related to the events that set the CS_WAIT_DATA in a previous step.
+          */ 
+         MXS_INFO("Slave %s:%i, server-id %d, binlog '%s@%lu': blr_slave_catchup "
+                   "called with CS_WAIT_DATA",
+                    slave->dcb->remote, ntohs((slave->dcb->ipv4).sin_port), slave->serverid,
+                    slave->binlogfile, slave->binlog_pos);
+    }
 
     /* check for a pending transaction and safe position */
     if (router->pending_transaction && strcmp(router->binlog_name, slave->binlogfile) == 0 &&
@@ -2167,6 +2175,7 @@ blr_slave_catchup(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave, bool large)
         do_return = 1;
     }
 
+    spinlock_release(&slave->catch_lock);
     spinlock_release(&router->binlog_lock);
 
     if (do_return)
@@ -2424,12 +2433,8 @@ blr_slave_catchup(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave, bool large)
     else if (slave->binlog_pos == router->binlog_position &&
              strcmp(slave->binlogfile, router->binlog_name) == 0)
     {
-        int state_change = 0;
-        unsigned int cstate = 0;
         spinlock_acquire(&router->binlog_lock);
         spinlock_acquire(&slave->catch_lock);
-
-        cstate = slave->cstate;
 
         /*
          * Now check again since we hold the router->binlog_lock
@@ -2438,69 +2443,22 @@ blr_slave_catchup(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave, bool large)
         if (slave->binlog_pos != router->binlog_position ||
             strcmp(slave->binlogfile, router->binlog_name) != 0)
         {
-            slave->cstate &= ~CS_UPTODATE;
             slave->cstate |= CS_EXPECTCB;
             spinlock_release(&slave->catch_lock);
             spinlock_release(&router->binlog_lock);
-
-            if ((cstate & CS_UPTODATE) == CS_UPTODATE)
-            {
-#ifdef STATE_CHANGE_LOGGING_ENABLED
-                MXS_NOTICE("%s: Slave %s:%d, server-id %d transition from up-to-date to "
-                           "catch-up in blr_slave_catchup, binlog file '%s', position %lu.",
-                           router->service->name,
-                           slave->dcb->remote,
-                           ntohs((slave->dcb->ipv4).sin_port),
-                           slave->serverid,
-                           slave->binlogfile, (unsigned long)slave->binlog_pos);
-#endif
-            }
 
             poll_fake_write_event(slave->dcb);
         }
         else
         {
-            if ((slave->cstate & CS_UPTODATE) == 0)
-            {
-                slave->stats.n_upd++;
-                slave->cstate |= CS_UPTODATE;
-                spinlock_release(&slave->catch_lock);
-                spinlock_release(&router->binlog_lock);
-                state_change = 1;
-            }
-            else
-            {
-                MXS_NOTICE("Execution entered branch were locks previously were NOT "
-                           "released. Previously this would have caused a lock-up.");
-                spinlock_release(&slave->catch_lock);
-                spinlock_release(&router->binlog_lock);
-            }
-        }
+            /* set the CS_WAIT_DATA that allows notification
+             * when new events are received form master server
+             * call back routine will be called later.
+             */
+            slave->cstate |= CS_WAIT_DATA;
 
-        if (state_change)
-        {
-            slave->stats.n_caughtup++;
-#ifdef STATE_CHANGE_LOGGING_ENABLED
-            // TODO: The % 50 should be removed. Now only every 50th state change is logged.
-            if (slave->stats.n_caughtup == 1)
-            {
-                MXS_NOTICE("%s: Slave %s:%d, server-id %d is now up to date '%s', position %lu.",
-                           router->service->name,
-                           slave->dcb->remote,
-                           ntohs((slave->dcb->ipv4).sin_port),
-                           slave->serverid,
-                           slave->binlogfile, (unsigned long)slave->binlog_pos);
-            }
-            else if ((slave->stats.n_caughtup % 50) == 0)
-            {
-                MXS_NOTICE("%s: Slave %s:%d, server-id %d is up to date '%s', position %lu.",
-                           router->service->name,
-                           slave->dcb->remote,
-                           ntohs((slave->dcb->ipv4).sin_port),
-                           slave->serverid,
-                           slave->binlogfile, (unsigned long)slave->binlog_pos);
-            }
-#endif
+            spinlock_release(&slave->catch_lock);
+            spinlock_release(&router->binlog_lock);
         }
     }
     else
@@ -2602,22 +2560,9 @@ blr_slave_callback(DCB *dcb, DCB_REASON reason, void *data)
                 return 0;
             }
             cstate = slave->cstate;
-            slave->cstate &= ~(CS_UPTODATE | CS_EXPECTCB);
+            slave->cstate &= ~(CS_EXPECTCB);
             slave->cstate |= CS_BUSY;
             spinlock_release(&slave->catch_lock);
-
-            if ((cstate & CS_UPTODATE) == CS_UPTODATE)
-            {
-#ifdef STATE_CHANGE_LOGGING_ENABLED
-                MXS_NOTICE("%s: Slave %s:%d, server-id %d transition from up-to-date to "
-                           "catch-up in blr_slave_callback, binlog file '%s', position %lu.",
-                           router->service->name,
-                           slave->dcb->remote,
-                           ntohs((slave->dcb->ipv4).sin_port),
-                           slave->serverid,
-                           slave->binlogfile, (unsigned long)slave->binlog_pos);
-#endif
-            }
 
             slave->stats.n_dcb++;
             blr_slave_catchup(router, slave, true);
@@ -5257,4 +5202,17 @@ blr_slave_send_heartbeat(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave)
 
     /* Write the packet */
     return slave->dcb->func.write(slave->dcb, resp);
+}
+
+/**
+ * Notify a slave that new events are stored in binlog file
+ *
+ * @param slave Current connected slave
+ *
+ */
+void blr_notify_slave(ROUTER_SLAVE *slave)
+{
+    /* Add fake event that will call the blr_slave_callback routine */
+    poll_fake_write_event(slave->dcb);
+    slave->cstate &= ~CS_WAIT_DATA;
 }

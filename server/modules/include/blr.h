@@ -552,13 +552,9 @@ static char *blrs_states[] =
 /**
  * Slave catch-up status
  */
-#define CS_UPTODATE             0x0004
-#define CS_EXPECTCB             0x0008
-#define CS_DIST                 0x0010
-#define CS_DISTLATCH            0x0020
-#define CS_THRDWAIT             0x0040
-#define CS_BUSY                 0x0100
-#define CS_HOLD                 0x0200
+#define CS_EXPECTCB             0x0004
+#define CS_WAIT_DATA            0x0020
+#define CS_BUSY                 0x0040
 
 /**
  * MySQL protocol OpCodes needed for replication
