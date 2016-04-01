@@ -2041,7 +2041,7 @@ blr_slave_binlog_dump(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave, GWBUF *queue
                slave->binlogfile, (unsigned long)slave->binlog_pos);
 
     poll_fake_write_event(slave->dcb);
-   
+
     return rval;
 }
 
@@ -2165,7 +2165,7 @@ blr_slave_catchup(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave, bool large)
          MXS_INFO("Slave %s:%i, server-id %d, binlog '%s@%lu': blr_slave_catchup "
                    "called with CS_WAIT_DATA",
                     slave->dcb->remote, ntohs((slave->dcb->ipv4).sin_port), slave->serverid,
-                    slave->binlogfile, slave->binlog_pos);
+                    slave->binlogfile, (unsigned long)slave->binlog_pos);
     }
 
     /* check for a pending transaction and safe position */

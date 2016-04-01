@@ -1470,19 +1470,8 @@ blr_handle_binlog_record(ROUTER_INSTANCE *router, GWBUF *pkt)
 
                             spinlock_release(&router->binlog_lock);
 
-                            /* Shall we remove this if and call blr_notify_all_slaves() once ? */
-
-                            if (router->master_event_state == BLR_EVENT_COMPLETE)
-                            {
-                                /* Notify clients */
-                                blr_notify_all_slaves(router);
-
-                            }
-                            else
-                            {
-                                /* Notify clients */
-                                blr_notify_all_slaves(router);
-                            }
+                            /* Notify clients */
+                            blr_notify_all_slaves(router);
                         }
                         else
                         {
@@ -2372,17 +2361,19 @@ bool blr_send_event(blr_thread_role_t role,
     if ((strcmp(slave->lsi_binlog_name, binlog_name) == 0) &&
         (slave->lsi_binlog_pos == binlog_pos))
     {
-        MXS_ERROR("The event %s:%u for slave %d@%s"
-                  "sent by thread %lu in the role of a %s "
-                  "was already sent by thread %lu in the role of a %s.",
+        MXS_ERROR("Slave %s:%i, server-id %d, binlog '%s', position %u: "
+                  "thread %lu in the role of %s could not send the event, "
+                  "the event has already been sent by thread %lu in the role of %s.",
+                  slave->dcb->remote,
+                  ntohs((slave->dcb->ipv4).sin_port),
+                  slave->serverid,
                   binlog_name,
                   binlog_pos,
-                  slave->serverid,
-                  slave->hostname ? slave->hostname : "unknown",
                   THREAD_SHELF(),
-                  role == BLR_THREAD_ROLE_MASTER ? "MASTER" : "SLAVE",
+                  role == BLR_THREAD_ROLE_MASTER ? "master" : "slave",
                   slave->lsi_sender_tid,
-                  slave->lsi_sender_role == BLR_THREAD_ROLE_MASTER ? "MASTER" : "SLAVE");
+                  slave->lsi_sender_role == BLR_THREAD_ROLE_MASTER ? "master" : "slave");
+        return false;
     }
 
     /** Check if the event and the OK byte fit into a single packet  */
@@ -2468,11 +2459,7 @@ void extract_checksum(ROUTER_INSTANCE* router, uint8_t *cksumptr, uint8_t len)
  */
 void blr_notify_all_slaves(ROUTER_INSTANCE *router)
 {
-    GWBUF *pkt;
-    uint8_t *buf;
-    ROUTER_SLAVE *slave, *nextslave;
-    int action;
-    unsigned int cstate;
+    ROUTER_SLAVE *slave;
     int notified = 0;
 
     spinlock_acquire(&router->lock);
