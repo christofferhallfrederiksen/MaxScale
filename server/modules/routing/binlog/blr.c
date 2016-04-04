@@ -1394,14 +1394,16 @@ diagnostics(ROUTER *router, DCB *dcb)
             else
             {
                 if ((session->cstate & CS_WAIT_DATA) == CS_WAIT_DATA)
+                {
                     dcb_printf(dcb, "\t\tSlave_mode:                              wait-for-data\n");
+                }
                 else
                 {
                     dcb_printf(dcb, "\t\tSlave_mode:                              catchup. %s%s\n",
-                           ((session->cstate & CS_EXPECTCB) == 0 ? "" :
-                            "Waiting for DCB queue to drain."),
-                           ((session->cstate & CS_BUSY) == 0 ? "" :
-                            " Busy in slave catchup."));
+                              ((session->cstate & CS_EXPECTCB) == 0 ? "" :
+                              "Waiting for DCB queue to drain."),
+                              ((session->cstate & CS_BUSY) == 0 ? "" :
+                               " Busy in slave catchup."));
                 }
             }
 #if SPINLOCK_PROFILE
