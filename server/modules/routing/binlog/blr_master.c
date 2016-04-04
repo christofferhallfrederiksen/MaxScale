@@ -103,7 +103,7 @@ static void blr_distribute_error_message(ROUTER_INSTANCE *router, char *message,
 int blr_write_data_into_binlog(ROUTER_INSTANCE *router, uint32_t data_len, uint8_t *buf);
 void extract_checksum(ROUTER_INSTANCE* router, uint8_t *cksumptr, uint8_t len);
 void blr_notify_all_slaves(ROUTER_INSTANCE *router);
-extern void blr_notify_slave(ROUTER_SLAVE *slave);
+extern bool blr_notify_waiting_slave(ROUTER_SLAVE *slave);
 
 static int keepalive = 1;
 
@@ -2471,15 +2471,11 @@ void blr_notify_all_slaves(ROUTER_INSTANCE *router)
             slave = slave->next;
             continue;
         }
-        spinlock_acquire(&slave->catch_lock);
-        if (slave->cstate & CS_WAIT_DATA)
+        /* Notify a slave that has CS_WAIT_DATA bit set */
+        if (blr_notify_waiting_slave(slave))
         {
-           notified++;
-
-           blr_notify_slave(slave);
+            notified++;
         }
-        spinlock_release(&slave->catch_lock);
-
         slave = slave->next;
     }
     spinlock_release(&router->lock);

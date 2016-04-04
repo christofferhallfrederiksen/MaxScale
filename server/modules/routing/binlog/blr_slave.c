@@ -5205,14 +5205,25 @@ blr_slave_send_heartbeat(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave)
 }
 
 /**
- * Notify a slave that new events are stored in binlog file
+ * Notify a waiting slave that new events are stored in binlog file
  *
- * @param slave Current connected slave
+ * @param    slave Current connected slave
+ * @return   true if slave has been notified 
  *
  */
-void blr_notify_slave(ROUTER_SLAVE *slave)
+bool blr_notify_waiting_slave(ROUTER_SLAVE *slave)
 {
-    /* Add fake event that will call the blr_slave_callback routine */
-    poll_fake_write_event(slave->dcb);
-    slave->cstate &= ~CS_WAIT_DATA;
+    bool ret = false;
+    spinlock_acquire(&slave->catch_lock);
+    if (slave->cstate & CS_WAIT_DATA)
+    {
+        ret = true;
+        /* Add fake event that will call the blr_slave_callback routine */
+        poll_fake_write_event(slave->dcb);
+        slave->cstate &= ~CS_WAIT_DATA;
+    }
+    spinlock_release(&slave->catch_lock);
+
+    return ret;
 }
+
