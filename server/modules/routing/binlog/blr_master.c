@@ -1490,16 +1490,6 @@ blr_handle_binlog_record(ROUTER_INSTANCE *router, GWBUF *pkt)
 
                             if (router->pending_transaction > 1)
                             {
-                                unsigned long long pos;
-                                unsigned long long end_pos;
-                                GWBUF *record;
-                                uint8_t *raw_data;
-                                REP_HEADER new_hdr;
-                                int i = 0;
-
-                                pos = router->binlog_position;
-                                end_pos = router->current_pos;
-
                                 spinlock_release(&router->binlog_lock);
 
                                 /* Notify clients */
