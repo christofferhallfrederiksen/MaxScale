@@ -2154,20 +2154,6 @@ blr_slave_catchup(ROUTER_INSTANCE *router, ROUTER_SLAVE *slave, bool large)
 
     do_return = 0;
 
-    /* This is just a check being logged */
-    if ((slave->cstate & CS_WAIT_DATA))
-    {
-         /* cstate has CS_BUSY and possibly the CS_WAIT_DATA
-          * That's becuase dcb_drain_writeq() is still calling
-          * callback routine for unwritten data
-          * related to the events that set the CS_WAIT_DATA in a previous step.
-          */
-         MXS_INFO("Slave %s:%i, server-id %d, binlog '%s@%lu': blr_slave_catchup "
-                   "called with CS_WAIT_DATA",
-                    slave->dcb->remote, ntohs((slave->dcb->ipv4).sin_port), slave->serverid,
-                    slave->binlogfile, (unsigned long)slave->binlog_pos);
-    }
-
     /* check for a pending transaction and safe position */
     if (router->pending_transaction && strcmp(router->binlog_name, slave->binlogfile) == 0 &&
         (slave->binlog_pos > router->binlog_position))
