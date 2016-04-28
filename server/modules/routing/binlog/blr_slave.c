@@ -2524,7 +2524,6 @@ blr_slave_callback(DCB *dcb, DCB_REASON reason, void *data)
 {
     ROUTER_SLAVE *slave = (ROUTER_SLAVE *)data;
     ROUTER_INSTANCE *router = slave->router;
-    unsigned int cstate;
 
     if (NULL == dcb->session->router_session)
     {
@@ -2545,7 +2544,6 @@ blr_slave_callback(DCB *dcb, DCB_REASON reason, void *data)
                 spinlock_release(&slave->catch_lock);
                 return 0;
             }
-            cstate = slave->cstate;
             slave->cstate &= ~(CS_EXPECTCB);
             slave->cstate |= CS_BUSY;
             spinlock_release(&slave->catch_lock);
