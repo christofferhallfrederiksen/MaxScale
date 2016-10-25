@@ -6,7 +6,7 @@
  * Use of this software is governed by the Business Source License included
  * in the LICENSE.TXT file and at www.mariadb.com/bsl.
  *
- * Change Date: 2019-01-01
+ * Change Date: 2019-07-01
  *
  * On the date above, in accordance with the Business Source License, use
  * of this software will be governed by version 2 or later of the General
@@ -28,6 +28,7 @@
 #include <modinfo.h>
 #include <maxconfig.h>
 #include <externcmd.h>
+#include <hashtable.h>
 
 /**
  * @file mysqlmon.h - The MySQL monitor
@@ -49,6 +50,8 @@
  * @endverbatim
  */
 
+#define MYSQLMON_DEFAULT_FAILCOUNT 5
+
 /**
  * The handle for an instance of a MySQL Monitor module
  */
@@ -62,6 +65,7 @@ typedef struct
     int replicationHeartbeat; /**< Monitor flag for MySQL replication heartbeat */
     bool detectStaleMaster; /**< Monitor flag for MySQL replication Stale Master detection */
     bool detectStaleSlave; /**< Monitor flag for MySQL replication Stale Master detection */
+    bool multimaster; /**< Detect and handle multi-master topologies */
     int disableMasterFailback; /**< Monitor flag for Galera Cluster Master failback */
     int availableWhenDonor; /**< Monitor flag for Galera Cluster Donor availability */
     int disableMasterRoleSetting; /**< Monitor flag to disable setting master role */
@@ -69,6 +73,11 @@ typedef struct
     MONITOR_SERVERS *master; /**< Master server for MySQL Master/Slave replication */
     char* script; /*< Script to call when state changes occur on servers */
     bool events[MAX_MONITOR_EVENT]; /*< enabled events */
+    HASHTABLE *server_info; /**< Contains server specific information */
+    bool failover; /**< If simple failover is enabled */
+    int failcount; /**< How many monitoring cycles servers must be
+                                   down before failover is initiated */
+    bool warn_failover; /**< Log a warning when failover happens */
 } MYSQL_MONITOR;
 
 #endif

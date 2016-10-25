@@ -180,6 +180,9 @@ static char *monitor_params[] =
     "available_when_donor",
     "disable_master_role_setting",
     "use_priority",
+    "multimaster",
+    "failover",
+    "failcount",
     NULL
 };
 
