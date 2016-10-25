@@ -1,8 +1,4 @@
-add_library(mysqlmon SHARED mysql_mon.c)
-target_link_libraries(mysqlmon maxscale-common)
-add_dependencies(mysqlmon pcre2)
-set_target_properties(mysqlmon PROPERTIES VERSION "1.4.0")
-install(TARGETS mysqlmon DESTINATION ${MAXSCALE_LIBDIR})
+add_subdirectory(mysqlmon)
 
 add_library(galeramon SHARED galeramon.c)
 target_link_libraries(galeramon maxscale-common)

@@ -1,12 +1,13 @@
-#ifndef _SERVER_H
-#define _SERVER_H
+#pragma once
+#ifndef _MAXSCALE_SERVER_H
+#define _MAXSCALE_SERVER_H
 /*
  * Copyright (c) 2016 MariaDB Corporation Ab
  *
  * Use of this software is governed by the Business Source License included
  * in the LICENSE.TXT file and at www.mariadb.com/bsl.
  *
- * Change Date: 2019-01-01
+ * Change Date: 2019-07-01
  *
  * On the date above, in accordance with the Business Source License, use
  * of this software will be governed by version 2 or later of the General
@@ -132,6 +133,7 @@ typedef struct server
 #define SERVER_MASTER_STICKINESS 0x0100  /**<< Server Master stickiness */
 #define SERVER_AUTH_ERROR        0x1000  /**<< Authentication error from monitor */
 #define SERVER_STALE_SLAVE       0x2000  /**<< Slave status is possible even without a master */
+#define SERVER_RELAY_MASTER      0x4000  /**<< Server is a relay master */
 
 /**
  * Is the server running - the macro returns true if the server is marked as running
