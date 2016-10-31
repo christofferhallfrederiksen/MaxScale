@@ -14,7 +14,7 @@
  * Public License.
  */
 
-/* 
+/*
  * File:   rwsplit_internal.h
  * Author: mbrampton
  *
@@ -26,11 +26,25 @@
 
 MXS_BEGIN_DECLS
 
-/* This needs to be removed along with dependency on it - see the 
+/* This needs to be removed along with dependency on it - see the
  * rwsplit_tmp_table_multi functions
  */
 #include <maxscale/protocol/mysql.h>
-    
+
+/*
+ * @brief Check that the appropriate number of backend servers has been found
+ * and that they are usable.
+ *
+ * @return bool whether successful backend checks
+ */
+inline bool check_backends_success_slaves(int nback, int nsucc, int max_nslaves)
+{
+    /**
+     * Routing must succeed to all backends that are used.
+     * There must be at least one and at most max_nslaves+1 backends.
+     */
+    return (nback > 0 && nsucc == nback && nback <= max_nslaves + 1);
+}
 /*
  * The following are implemented in rwsplit_mysql.c
  */
@@ -129,7 +143,7 @@ bool select_connect_backend_servers(backend_ref_t **p_master_ref,
 /*
  * The following are implemented in rwsplit_tmp_table_multi.c
  */
-void check_drop_tmp_table(ROUTER_CLIENT_SES *router_cli_ses, 
+void check_drop_tmp_table(ROUTER_CLIENT_SES *router_cli_ses,
         GWBUF *querybuf,
         mysql_server_cmd_t packet_type);
 qc_query_type_t is_read_tmp_table(ROUTER_CLIENT_SES *router_cli_ses,

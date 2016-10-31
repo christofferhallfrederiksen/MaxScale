@@ -237,7 +237,7 @@ extern RESULTSET *serviceGetListenerList();
 extern bool service_all_services_have_listeners();
 
 /**
- * Get the capabilities of the servive.
+ * Get the capabilities of the service.
  *
  * The capabilities of a service are the union of the capabilities of
  * its router and all filters.
@@ -247,6 +247,23 @@ extern bool service_all_services_have_listeners();
 static inline uint64_t service_get_capabilities(const SERVICE *service)
 {
     return service->capabilities;
+}
+
+/*
+ * @brief Calculate the number of  backend servers for a service
+ *
+ * @return number of servers
+ */
+static inline int service_number_of_servers(SERVICE *service)
+{
+    int nservers = 0;
+    SERVER_REF *sref;
+    sref = service->dbref;
+    while (sref)
+    {
+        nservers++;
+        sref = sref->next;
+    }
 }
 
 MXS_END_DECLS

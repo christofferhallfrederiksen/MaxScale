@@ -117,7 +117,7 @@ bool select_connect_backend_servers(backend_ref_t **p_master_ref,
      * The function was called because new slave must be selected to replace
      * failed one.
      */
-    bool master_connected = *p_master_ref != NULL;
+    bool master_connected = (*p_master_ref != NULL);
 
     /** Check slave selection criteria and set compare function */
     int (*p)(const void *, const void *) = criteria_cmpfun[select_criteria];
@@ -447,10 +447,9 @@ static void log_server_connections(select_criteria_t select_criteria,
  */
 static BACKEND *get_root_master(backend_ref_t *servers, int router_nservers)
 {
-    int i = 0;
     BACKEND *master_host = NULL;
 
-    for (i = 0; i < router_nservers; i++)
+    for (int i = 0; i < router_nservers; i++)
     {
         BACKEND *b;
 

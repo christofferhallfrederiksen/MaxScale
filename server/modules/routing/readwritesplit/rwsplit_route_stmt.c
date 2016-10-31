@@ -37,9 +37,20 @@
 
 extern int (*criteria_cmpfun[LAST_CRITERIA])(const void *, const void *);
 
+static void set_transaction_status_flags (ROUTER_CLIENT_SES *rses, qc_query_type_t qtype);
+static bool handle_appropriate_target(
+    ROUTER_INSTANCE *inst,
+    ROUTER_CLIENT_SESSION *rses,
+    GWBUF *querybuf,
+    route_target_t route_target,
+    DCB **target_dcb);
 static backend_ref_t *check_candidate_bref(backend_ref_t *cand,
                                            backend_ref_t *new,
                                            select_criteria_t sc);
+static bool route_session_write_one_way (ROUTER_CLIENT_SES *router_cli_ses,
+        backend_ref_t *backend_ref, GWBUF *querybuf, int max_nslaves);
+static bool route_session_write_general (ROUTER_CLIENT_SES *router_cli_ses,
+        backend_ref_t *backend_ref, int max_nslaves);
 static backend_ref_t *get_root_master_bref(ROUTER_CLIENT_SES *rses);
 
 /**
@@ -59,7 +70,6 @@ bool route_single_stmt(ROUTER_INSTANCE *inst, ROUTER_CLIENT_SES *rses,
     int packet_type;
     DCB *target_dcb = NULL;
     route_target_t route_target;
-    bool succp = false;
     bool non_empty_packet;
 
     ss_dassert(querybuf->next == NULL); // The buffer must be contiguous.
@@ -75,44 +85,11 @@ bool route_single_stmt(ROUTER_INSTANCE *inst, ROUTER_CLIENT_SES *rses,
         if (!rses_begin_locked_router_action(rses))
         {
             return false;
-        }
+        }        
         handle_multi_temp_and_load(rses, querybuf, packet_type, (int *)&qtype);
         rses_end_locked_router_action(rses);
-        /**
-         * If autocommit is disabled or transaction is explicitly started
-         * transaction becomes active and master gets all statements until
-         * transaction is committed and autocommit is enabled again.
-         */
-        if (rses->rses_autocommit_enabled &&
-            QUERY_IS_TYPE(qtype, QUERY_TYPE_DISABLE_AUTOCOMMIT))
-        {
-            rses->rses_autocommit_enabled = false;
 
-            if (!rses->rses_transaction_active)
-            {
-                rses->rses_transaction_active = true;
-            }
-        }
-        else if (!rses->rses_transaction_active &&
-                 QUERY_IS_TYPE(qtype, QUERY_TYPE_BEGIN_TRX))
-        {
-            rses->rses_transaction_active = true;
-        }
-        /**
-         * Explicit COMMIT and ROLLBACK, implicit COMMIT.
-         */
-        if (rses->rses_autocommit_enabled && rses->rses_transaction_active &&
-            (QUERY_IS_TYPE(qtype, QUERY_TYPE_COMMIT) ||
-             QUERY_IS_TYPE(qtype, QUERY_TYPE_ROLLBACK)))
-        {
-            rses->rses_transaction_active = false;
-        }
-        else if (!rses->rses_autocommit_enabled &&
-                 QUERY_IS_TYPE(qtype, QUERY_TYPE_ENABLE_AUTOCOMMIT))
-        {
-            rses->rses_autocommit_enabled = true;
-            rses->rses_transaction_active = false;
-        }
+        set_transaction_status_flags(rses, qtype);
 
         if (MXS_LOG_PRIORITY_IS_ENABLED(LOG_INFO))
         {
@@ -145,48 +122,10 @@ bool route_single_stmt(ROUTER_INSTANCE *inst, ROUTER_CLIENT_SES *rses,
         MXS_INFO("> LOAD DATA LOCAL INFILE finished: %lu bytes sent.",
                  rses->rses_load_data_sent + gwbuf_length(querybuf));
     }
-    if (TARGET_IS_ALL(route_target))
-    {
-        succp = handle_target_is_all(route_target, inst, rses, querybuf, packet_type, qtype);
-    }
-    else if (rses_begin_locked_router_action(rses))
-    {
-        /* Now we have a lock on the router session */
-        DCB *master_dcb = rses->rses_master_ref ? rses->rses_master_ref->bref_dcb : NULL;
-
-        /**
-         * There is a hint which either names the target backend or
-         * hint which sets maximum allowed replication lag for the
-         * backend.
-         */
-        if (TARGET_IS_NAMED_SERVER(route_target) ||
-            TARGET_IS_RLAG_MAX(route_target))
-        {
-            succp = handle_hinted_target(rses, querybuf, route_target, &target_dcb);
-        }
-        else if (TARGET_IS_SLAVE(route_target))
-        {
-            succp = handle_slave_is_target(inst, rses, &target_dcb);
-        }
-        else if (TARGET_IS_MASTER(route_target))
-        {
-            succp = handle_master_is_target(inst, rses, &target_dcb);
-        }
-
-        if (target_dcb && succp) /*< Have DCB of the target backend */
-        {
-            handle_got_target(inst, rses, querybuf, target_dcb);
-        }
-        rses_end_locked_router_action(rses);
-    }
-    else
-    {
-        session_lock_failure_handling(querybuf, packet_type, qtype);
-        succp = false;
-    }
-
-    return succp;
-} /* route_single_stmt */
+    
+    return handle_appropriate_target(inst, rses, querybuf, route_target, &target_dcb);
+    
+ } /* route_single_stmt */
 
 /**
  * Execute in backends used by current router session.
@@ -213,21 +152,21 @@ bool route_session_write(ROUTER_CLIENT_SES *router_cli_ses,
                                 int packet_type,
                                 qc_query_type_t qtype)
 {
-    bool succp;
+    bool result;
     rses_property_t *prop;
-    backend_ref_t *backend_ref;
-    int i;
-    int max_nslaves;
-    int nbackends;
-    int nsucc;
+    backend_ref_t *backend_ref = router_cli_ses->rses_backend_ref;
+    /** Maximum number of slaves in this router client session */
+    int max_nslaves = rses_get_max_slavecount(router_cli_ses, router_cli_ses->rses_nbackends);
 
     MXS_INFO("Session write, routing to all servers.");
-    /** Maximum number of slaves in this router client session */
-    max_nslaves =
-        rses_get_max_slavecount(router_cli_ses, router_cli_ses->rses_nbackends);
-    nsucc = 0;
-    nbackends = 0;
-    backend_ref = router_cli_ses->rses_backend_ref;
+
+    /** Lock router session */
+    /* This lock is held for a number of operations, and it may be desirable */
+    /* to optimise by releasing and re-locking more frequently */
+    if (!rses_begin_locked_router_action(router_cli_ses))
+    {
+        return false;
+    }
 
     /**
      * These are one-way messages and server doesn't respond to them.
@@ -237,191 +176,101 @@ bool route_session_write(ROUTER_CLIENT_SES *router_cli_ses,
      */
     if (is_packet_a_one_way_message(packet_type))
     {
-        int rc;
+        /**
+         * Routing must succeed to all backends that are used.
+         * There must be at least one and at most max_nslaves+1 backends.
+         */
+        result = route_session_write_one_way (router_cli_ses,
+            backend_ref_t *backend_ref, querybuf, max_nslaves);
+    }
 
-        /** Lock router session */
-        if (!rses_begin_locked_router_action(router_cli_ses))
+    else
+    {
+        if (router_cli_ses->rses_nbackends <= 0)
         {
-            goto return_succp;
+            MXS_INFO("Router session doesn't have any backends in use. Routing failed. <");
+            rses_end_locked_router_action(router_cli_ses);
+            return false;
         }
 
-        for (i = 0; i < router_cli_ses->rses_nbackends; i++)
+        if (router_cli_ses->rses_config.rw_max_sescmd_history_size > 0 &&
+            router_cli_ses->rses_nsescmd >=
+            router_cli_ses->rses_config.rw_max_sescmd_history_size)
         {
-            DCB *dcb = backend_ref[i].bref_dcb;
-
-            if (MXS_LOG_PRIORITY_IS_ENABLED(LOG_INFO) &&
-                BREF_IS_IN_USE((&backend_ref[i])))
-            {
-                MXS_INFO("Route query to %s \t%s:%d%s",
-                         (SERVER_IS_MASTER(backend_ref[i].bref_backend->backend_server)
-                          ? "master" : "slave"),
-                         backend_ref[i].bref_backend->backend_server->name,
-                         backend_ref[i].bref_backend->backend_server->port,
-                         (i + 1 == router_cli_ses->rses_nbackends ? " <" : " "));
-            }
-
-            if (BREF_IS_IN_USE((&backend_ref[i])))
-            {
-                nbackends += 1;
-                if ((rc = dcb->func.write(dcb, gwbuf_clone(querybuf))) == 1)
-                {
-                    nsucc += 1;
-                }
-            }
-        }
-        rses_end_locked_router_action(router_cli_ses);
-        gwbuf_free(querybuf);
-        goto return_succp;
-    }
-    /** Lock router session */
-    if (!rses_begin_locked_router_action(router_cli_ses))
-    {
-        goto return_succp;
-    }
-
-    if (router_cli_ses->rses_nbackends <= 0)
-    {
-        MXS_INFO("Router session doesn't have any backends in use. Routing failed. <");
-        goto return_succp;
-    }
-
-    if (router_cli_ses->rses_config.rw_max_sescmd_history_size > 0 &&
-        router_cli_ses->rses_nsescmd >=
-        router_cli_ses->rses_config.rw_max_sescmd_history_size)
-    {
-        MXS_WARNING("Router session exceeded session command history limit. "
+            MXS_WARNING("Router session exceeded session command history limit. "
                     "Slave recovery is disabled and only slave servers with "
                     "consistent session state are used "
                     "for the duration of the session.");
-        router_cli_ses->rses_config.rw_disable_sescmd_hist = true;
-        router_cli_ses->rses_config.rw_max_sescmd_history_size = 0;
-    }
+            router_cli_ses->rses_config.rw_disable_sescmd_hist = true;
+            router_cli_ses->rses_config.rw_max_sescmd_history_size = 0;
+        }
 
-    if (router_cli_ses->rses_config.rw_disable_sescmd_hist)
-    {
-        rses_property_t *prop, *tmp;
-        backend_ref_t *bref;
-        bool conflict;
-
-        prop = router_cli_ses->rses_properties[RSES_PROP_TYPE_SESCMD];
-        while (prop)
+        if (router_cli_ses->rses_config.rw_disable_sescmd_hist)
         {
-            conflict = false;
-
-            for (i = 0; i < router_cli_ses->rses_nbackends; i++)
+            rses_property_t *tmp_prop = router_cli_ses->rses_properties[RSES_PROP_TYPE_SESCMD];
+            while (tmp_prop)
             {
-                bref = &backend_ref[i];
-                if (BREF_IS_IN_USE(bref))
-                {
+                bool conflict = false;
 
-                    if (bref->bref_sescmd_cur.position <=
-                        prop->rses_prop_data.sescmd.position + 1)
+                for (int i = 0; i < router_cli_ses->rses_nbackends; i++)
+                {
+                    backend_ref_t *bref = &backend_ref[i];
+                    if (BREF_IS_IN_USE(bref) &&
+                        (bref->bref_sescmd_cur.position <=
+                            tmp_prop->rses_prop_data.sescmd.position + 1))
                     {
                         conflict = true;
                         break;
                     }
                 }
-            }
 
-            if (conflict)
-            {
-                break;
-            }
+                if (conflict)
+                {
+                    break;
+                }
 
-            tmp = prop;
-            router_cli_ses->rses_properties[RSES_PROP_TYPE_SESCMD] = prop->rses_prop_next;
-            rses_property_done(tmp);
-            prop = router_cli_ses->rses_properties[RSES_PROP_TYPE_SESCMD];
+                router_cli_ses->rses_properties[RSES_PROP_TYPE_SESCMD] = tmp_prop->rses_prop_next;
+                rses_property_done(tmp_prop);
+                tmp_prop = router_cli_ses->rses_properties[RSES_PROP_TYPE_SESCMD];
+            }
         }
-    }
 
-    /**
-     * Additional reference is created to querybuf to
-     * prevent it from being released before properties
-     * are cleaned up as a part of router sessionclean-up.
-     */
-    if ((prop = rses_property_init(RSES_PROP_TYPE_SESCMD)) == NULL)
-    {
-        MXS_ERROR("Router session property initialization failed");
-        rses_end_locked_router_action(router_cli_ses);
-        return false;
-    }
-
-    mysql_sescmd_init(prop, querybuf, packet_type, router_cli_ses);
-
-    /** Add sescmd property to router client session */
-    if (rses_property_add(router_cli_ses, prop) != 0)
-    {
-        MXS_ERROR("Session property addition failed.");
-        rses_end_locked_router_action(router_cli_ses);
-        return false;
-    }
-
-    for (i = 0; i < router_cli_ses->rses_nbackends; i++)
-    {
-        if (BREF_IS_IN_USE((&backend_ref[i])))
+        /**
+         * Additional reference is created to querybuf to
+         * prevent it from being released before properties
+         * are cleaned up as a part of router sessionclean-up.
+         */
+        if ((prop = rses_property_init(RSES_PROP_TYPE_SESCMD)) == NULL)
         {
-            sescmd_cursor_t *scur;
-
-            nbackends += 1;
-
-            if (MXS_LOG_PRIORITY_IS_ENABLED(LOG_INFO))
-            {
-                MXS_INFO("Route query to %s \t%s:%d%s",
-                         (SERVER_IS_MASTER(backend_ref[i].bref_backend->backend_server)
-                          ? "master" : "slave"),
-                         backend_ref[i].bref_backend->backend_server->name,
-                         backend_ref[i].bref_backend->backend_server->port,
-                         (i + 1 == router_cli_ses->rses_nbackends ? " <" : " "));
-            }
-
-            scur = backend_ref_get_sescmd_cursor(&backend_ref[i]);
-
-            /**
-             * Add one waiter to backend reference.
-             */
-            bref_set_state(get_bref_from_dcb(router_cli_ses, backend_ref[i].bref_dcb),
-                           BREF_WAITING_RESULT);
-            /**
-             * Start execution if cursor is not already executing.
-             * Otherwise, cursor will execute pending commands
-             * when it completes with previous commands.
-             */
-            if (sescmd_cursor_is_active(scur))
-            {
-                nsucc += 1;
-                MXS_INFO("Backend %s:%d already executing sescmd.",
-                         backend_ref[i].bref_backend->backend_server->name,
-                         backend_ref[i].bref_backend->backend_server->port);
-            }
-            else
-            {
-                if (execute_sescmd_in_backend(&backend_ref[i]))
-                {
-                    nsucc += 1;
-                }
-                else
-                {
-                    MXS_ERROR("Failed to execute session command in %s:%d",
-                              backend_ref[i].bref_backend->backend_server->name,
-                              backend_ref[i].bref_backend->backend_server->port);
-                }
-            }
+            MXS_ERROR("Router session property initialization failed");
+            rses_end_locked_router_action(router_cli_ses);
+            return false;
         }
-    }
 
-    atomic_add(&router_cli_ses->rses_nsescmd, 1);
+        mysql_sescmd_init(prop, querybuf, packet_type, router_cli_ses);
+
+        /** Add sescmd property to router client session */
+        if (rses_property_add(router_cli_ses, prop) != 0)
+        {
+            MXS_ERROR("Session property addition failed.");
+            rses_end_locked_router_action(router_cli_ses);
+            return false;
+        }
+
+        /**
+         * Routing must succeed to all backends that are used.
+         * There must be at least one and at most max_nslaves+1 backends.
+         */
+        result = route_session_write_general (router_cli_ses,
+            backend_ref, max_nslaves)
+        
+        atomic_add(&router_cli_ses->rses_nsescmd, 1);
+    }
 
     /** Unlock router session */
     rses_end_locked_router_action(router_cli_ses);
 
-return_succp:
-    /**
-     * Routing must succeed to all backends that are used.
-     * There must be at least one and at most max_nslaves+1 backends.
-     */
-    succp = (nbackends > 0 && nsucc == nbackends && nbackends <= max_nslaves + 1);
-    return succp;
+    return result;
 }
 
 /**
@@ -1397,4 +1246,231 @@ static backend_ref_t *get_root_master_bref(ROUTER_CLIENT_SES *rses)
     }
 
     return candidate_bref;
+}
+
+/********************************
+ * @brief Set the transaction flags in the router session data
+ *
+ * If autocommit is disabled or transaction is explicitly started
+ * transaction becomes active and master gets all statements until
+ * transaction is committed and autocommit is enabled again.
+ * 
+ * @param   rses pointer to router session
+ * @param   qtype the query type
+ *
+ */
+static void set_transaction_status_flags (ROUTER_CLIENT_SES *rses, qc_query_type_t qtype)
+{
+    if (rses->rses_autocommit_enabled &&
+        QUERY_IS_TYPE(qtype, QUERY_TYPE_DISABLE_AUTOCOMMIT))
+    {
+        rses->rses_autocommit_enabled = false;
+        rses->rses_transaction_active = true;
+    }
+    else if (!rses->rses_transaction_active &&
+         QUERY_IS_TYPE(qtype, QUERY_TYPE_BEGIN_TRX))
+    {
+        rses->rses_transaction_active = true;
+    }
+    
+    /**
+     * Explicit COMMIT and ROLLBACK, implicit COMMIT.
+     */
+    if (rses->rses_autocommit_enabled && rses->rses_transaction_active &&
+        (QUERY_IS_TYPE(qtype, QUERY_TYPE_COMMIT) ||
+         QUERY_IS_TYPE(qtype, QUERY_TYPE_ROLLBACK)))
+    {
+        rses->rses_transaction_active = false;
+    }
+    else if (!rses->rses_autocommit_enabled &&
+         QUERY_IS_TYPE(qtype, QUERY_TYPE_ENABLE_AUTOCOMMIT))
+    {
+        rses->rses_autocommit_enabled = true;
+        rses->rses_transaction_active = false;
+    }
+}
+
+/********************************
+ * @brief Set the target DCB based on analysis of the query and current status
+ *
+ * If autocommit is disabled or transaction is explicitly started
+ * transaction becomes active and master gets all statements until
+ * transaction is committed and autocommit is enabled again.
+ * 
+ * @param   rses pointer to router session
+ * @param   querybuf the buffer containing the query
+ * @param   route_target the bit mask indicating the target
+ * @param   target_dcb the DCB to be set
+ *
+ * @return  bool, true if target has been set successfully, false otherwise
+ */
+static bool handle_appropriate_target(
+    ROUTER_INSTANCE *inst,
+    ROUTER_CLIENT_SESSION *rses,
+    GWBUF *querybuf,
+    route_target_t route_target,
+    DCB **target_dcb)
+{
+    if (TARGET_IS_ALL(route_target))
+    {
+        return handle_target_is_all(route_target, inst, rses, querybuf, packet_type, qtype);
+    }
+    else if (rses_begin_locked_router_action(rses))
+    {
+        bool result = false;
+        /**
+         * There is a hint which either names the target backend or
+         * hint which sets maximum allowed replication lag for the
+         * backend.
+         */
+        if (TARGET_IS_NAMED_SERVER(route_target) ||
+            TARGET_IS_RLAG_MAX(route_target))
+        {
+            result = handle_hinted_target(rses, querybuf, route_target, &target_dcb);
+        }
+        else if (TARGET_IS_SLAVE(route_target))
+        {
+            result = handle_slave_is_target(inst, rses, &target_dcb);
+        }
+        else if (TARGET_IS_MASTER(route_target))
+        {
+            result = handle_master_is_target(inst, rses, &target_dcb);
+        }
+        if (result && target_dcb)
+        /*< Have DCB of the target backend */
+        {
+            handle_got_target(inst, rses, querybuf, target_dcb);
+        }
+        rses_end_locked_router_action(rses);
+        return result;
+    }
+    else
+    {
+        session_lock_failure_handling(querybuf, packet_type, qtype);
+        return false;
+    }    
+}
+
+/********************************
+ * @brief Work through backend servers, sending one way message
+ *
+ * The query buffer is written to each backend in turn. This completes 
+ * processing for a one way message, so the buffer can then be freed. The
+ * backends and successful writes are both counted so that total success
+ * can be determined and returned to the caller.
+ * 
+ * @param   router_cli_ses pointer to router session
+ * @param   backend_ref is the router backend information array
+ * @param   querybuf the buffer containing the message
+ * @param   max_nslaves the maximum number of slaves for the router
+ *
+ * @return  bool, true if messages have all been sent successfully, false otherwise
+ */
+static bool route_session_write_one_way (ROUTER_CLIENT_SES *router_cli_ses,
+        backend_ref_t *backend_ref, GWBUF *querybuf, int max_nslaves)
+{
+    int nbackends = 0;
+    int nsucc = 0;
+    
+    for (int i = 0; i < router_cli_ses->rses_nbackends; i++)
+    {
+        DCB *dcb = backend_ref[i].bref_dcb;
+
+        if (MXS_LOG_PRIORITY_IS_ENABLED(LOG_INFO) &&
+            BREF_IS_IN_USE((&backend_ref[i])))
+        {
+            MXS_INFO("Route query to %s \t%s:%d%s",
+                (SERVER_IS_MASTER(backend_ref[i].bref_backend->backend_server)
+                    ? "master" : "slave"),
+                backend_ref[i].bref_backend->backend_server->name,
+                backend_ref[i].bref_backend->backend_server->port,
+                (i + 1 == router_cli_ses->rses_nbackends ? " <" : " "));
+        }
+
+        if (BREF_IS_IN_USE((&backend_ref[i])))
+        {
+            nbackends += 1;
+            if (dcb->func.write(dcb, gwbuf_clone(querybuf)) == 1)
+            {
+                nsucc += 1;
+            }
+        }
+    }
+    gwbuf_free(querybuf);
+    return check_backends_success_slaves(int nbackends, int nsucc, int max_nslaves);
+}
+
+/********************************
+ * @brief Work through backend servers, sending session commands
+ *
+ * The commands are written to each backend in turn. Session commands are
+ * found by obtaining a cursor which can be passed to  the execute_sescmd_in_backend
+ * function. The backends and successful writes are both counted so that 
+ * total success can be determined and returned to the caller.
+ * 
+ * @param   router_cli_ses pointer to router session
+ * @param   backend_ref is the router backend information array
+ * @param   max_nslaves the maximum number of slaves for the router
+ *
+ * @return  bool, true if messages have all been sent successfully, false otherwise
+ */
+static bool route_session_write_general (ROUTER_CLIENT_SES *router_cli_ses,
+        backend_ref_t *backend_ref, int max_nslaves)
+{
+    int nbackends = 0;
+    int nsucc = 0;
+    
+    for (int i = 0; i < router_cli_ses->rses_nbackends; i++)
+    {
+        if (BREF_IS_IN_USE((&backend_ref[i])))
+        {
+            sescmd_cursor_t *scur;
+
+            nbackends += 1;
+
+            if (MXS_LOG_PRIORITY_IS_ENABLED(LOG_INFO))
+            {
+                MXS_INFO("Route query to %s \t%s:%d%s",
+                         (SERVER_IS_MASTER(backend_ref[i].bref_backend->backend_server)
+                          ? "master" : "slave"),
+                         backend_ref[i].bref_backend->backend_server->name,
+                         backend_ref[i].bref_backend->backend_server->port,
+                         (i + 1 == router_cli_ses->rses_nbackends ? " <" : " "));
+            }
+
+            scur = backend_ref_get_sescmd_cursor(&backend_ref[i]);
+
+            /**
+             * Add one waiter to backend reference.
+             */
+            bref_set_state(get_bref_from_dcb(router_cli_ses, backend_ref[i].bref_dcb),
+                           BREF_WAITING_RESULT);
+            /**
+             * Start execution if cursor is not already executing.
+             * Otherwise, cursor will execute pending commands
+             * when it completes with previous commands.
+             */
+            if (sescmd_cursor_is_active(scur))
+            {
+                nsucc += 1;
+                MXS_INFO("Backend %s:%d already executing sescmd.",
+                         backend_ref[i].bref_backend->backend_server->name,
+                         backend_ref[i].bref_backend->backend_server->port);
+            }
+            else
+            {
+                if (execute_sescmd_in_backend(&backend_ref[i]))
+                {
+                    nsucc += 1;
+                }
+                else
+                {
+                    MXS_ERROR("Failed to execute session command in %s:%d",
+                              backend_ref[i].bref_backend->backend_server->name,
+                              backend_ref[i].bref_backend->backend_server->port);
+                }
+            }
+        }
+    }
+    return check_backends_success_slaves(int nbackends, int nsucc, int max_nslaves);
 }
