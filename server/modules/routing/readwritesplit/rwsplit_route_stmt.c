@@ -40,9 +40,11 @@ extern int (*criteria_cmpfun[LAST_CRITERIA])(const void *, const void *);
 static void set_transaction_status_flags (ROUTER_CLIENT_SES *rses, qc_query_type_t qtype);
 static bool handle_appropriate_target(
     ROUTER_INSTANCE *inst,
-    ROUTER_CLIENT_SESSION *rses,
+    ROUTER_CLIENT_SES *rses,
     GWBUF *querybuf,
     route_target_t route_target,
+    qc_query_type_t qtype,
+    int packet_type,
     DCB **target_dcb);
 static backend_ref_t *check_candidate_bref(backend_ref_t *cand,
                                            backend_ref_t *new,
@@ -123,7 +125,8 @@ bool route_single_stmt(ROUTER_INSTANCE *inst, ROUTER_CLIENT_SES *rses,
                  rses->rses_load_data_sent + gwbuf_length(querybuf));
     }
     
-    return handle_appropriate_target(inst, rses, querybuf, route_target, &target_dcb);
+    return handle_appropriate_target(inst, rses, querybuf, route_target,
+            qtype, packet_type, &target_dcb);
     
  } /* route_single_stmt */
 
@@ -181,7 +184,7 @@ bool route_session_write(ROUTER_CLIENT_SES *router_cli_ses,
          * There must be at least one and at most max_nslaves+1 backends.
          */
         result = route_session_write_one_way (router_cli_ses,
-            backend_ref_t *backend_ref, querybuf, max_nslaves);
+            backend_ref, querybuf, max_nslaves);
     }
 
     else
@@ -262,7 +265,7 @@ bool route_session_write(ROUTER_CLIENT_SES *router_cli_ses,
          * There must be at least one and at most max_nslaves+1 backends.
          */
         result = route_session_write_general (router_cli_ses,
-            backend_ref, max_nslaves)
+            backend_ref, max_nslaves);
         
         atomic_add(&router_cli_ses->rses_nsescmd, 1);
     }
@@ -1306,9 +1309,11 @@ static void set_transaction_status_flags (ROUTER_CLIENT_SES *rses, qc_query_type
  */
 static bool handle_appropriate_target(
     ROUTER_INSTANCE *inst,
-    ROUTER_CLIENT_SESSION *rses,
+    ROUTER_CLIENT_SES *rses,
     GWBUF *querybuf,
     route_target_t route_target,
+    qc_query_type_t qtype,
+    int packet_type,
     DCB **target_dcb)
 {
     if (TARGET_IS_ALL(route_target))
@@ -1326,20 +1331,20 @@ static bool handle_appropriate_target(
         if (TARGET_IS_NAMED_SERVER(route_target) ||
             TARGET_IS_RLAG_MAX(route_target))
         {
-            result = handle_hinted_target(rses, querybuf, route_target, &target_dcb);
+            result = handle_hinted_target(rses, querybuf, route_target, target_dcb);
         }
         else if (TARGET_IS_SLAVE(route_target))
         {
-            result = handle_slave_is_target(inst, rses, &target_dcb);
+            result = handle_slave_is_target(inst, rses, target_dcb);
         }
         else if (TARGET_IS_MASTER(route_target))
         {
-            result = handle_master_is_target(inst, rses, &target_dcb);
+            result = handle_master_is_target(inst, rses, target_dcb);
         }
         if (result && target_dcb)
         /*< Have DCB of the target backend */
         {
-            handle_got_target(inst, rses, querybuf, target_dcb);
+            handle_got_target(inst, rses, querybuf, *target_dcb);
         }
         rses_end_locked_router_action(rses);
         return result;
@@ -1397,7 +1402,7 @@ static bool route_session_write_one_way (ROUTER_CLIENT_SES *router_cli_ses,
         }
     }
     gwbuf_free(querybuf);
-    return check_backends_success_slaves(int nbackends, int nsucc, int max_nslaves);
+    return check_backends_success_slaves(nbackends, nsucc, max_nslaves);
 }
 
 /********************************
@@ -1472,5 +1477,5 @@ static bool route_session_write_general (ROUTER_CLIENT_SES *router_cli_ses,
             }
         }
     }
-    return check_backends_success_slaves(int nbackends, int nsucc, int max_nslaves);
+    return check_backends_success_slaves(nbackends, nsucc, max_nslaves);
 }

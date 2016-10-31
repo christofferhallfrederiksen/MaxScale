@@ -264,6 +264,7 @@ static inline int service_number_of_servers(SERVICE *service)
         nservers++;
         sref = sref->next;
     }
+    return nservers;
 }
 
 MXS_END_DECLS
