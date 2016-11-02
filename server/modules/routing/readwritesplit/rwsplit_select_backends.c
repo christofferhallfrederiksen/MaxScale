@@ -75,6 +75,23 @@ int (*criteria_cmpfun[LAST_CRITERIA])(const void *, const void *) =
  * As a result, the first master found is chosen. There will possibly be more
  * backend references than connected backends because only those in correct state
  * are connected to.
+ * 
+ * NOTE TODO (Martin): It appears that the interface to this function would be a lot
+ * simpler if a router session were passed. At all existing call locations a 
+ * router session exists (although it may be only partially formed). The call
+ * from clientReply passes parameters that are all properties of the router
+ * session, suggesting that the router session is the only needed parameter.
+ * The call from newSession is made before the router session has been fully
+ * populated, but it is not clear why the router session could not have values
+ * set for the needed items before calling this function. The third and last
+ * call to this function is from handle_error_new_connection and the logic of
+ * recomputing items like the maximum number of slaves is obscure (maybe it is
+ * possible for this error routine to be called prior to completion of the
+ * router session, but if so, that would be obviated by setting the router
+ * session values earlier). There also seems some risk in recomputing numbers
+ * that are used as array bounds while there is no reason to think the array
+ * has actually been recreated.
+ * 
  *
  * @param p_master_ref Pointer to location where master's backend reference is to  be stored
  * @param backend_ref Pointer to backend server reference object array
@@ -121,6 +138,15 @@ bool select_connect_backend_servers(backend_ref_t **p_master_ref,
 
     /** Check slave selection criteria and set compare function */
     int (*p)(const void *, const void *) = criteria_cmpfun[select_criteria];
+    /*
+     * This seems inadequate (TODO Martin). The behaviour of qsort with a null
+     * comparison function is unknown to me. It would be clearer and safer to
+     * avoid calling qsort if p is null. Protecting it with dassert is not
+     * sufficient unless there is some reason to suppose (unlikely) that there
+     * is 100% test coverage. If p is null, it may be desirable to also
+     * write a log message, although choosing the wrong slave should not 
+     * have disastrous consequences.
+     */
     ss_dassert(p);
 
     /** Sort the pointer list to servers according to slave selection criteria.
@@ -240,7 +266,17 @@ bool select_connect_backend_servers(backend_ref_t **p_master_ref,
     return succp;
 }
 
-/** Compare number of connections from this router in backend servers */
+/*
+ * @brief Compare number of connections from this router in two backend servers
+ * 
+ * @param bref1 Reference to a backend server
+ * @param bref2 Reference to another backend server
+ * 
+ * @return Excess of connections to first ref over second ref (this router),
+ * weighted if both servers have a weighting. If only one server
+ * has a non-zero weighting, then +1 if only second server has a weighting, or
+ * -1 if only first server has a weighting. */
+
 static int bref_cmp_router_conn(const void *bref1, const void *bref2)
 {
     BACKEND *b1 = ((backend_ref_t *)bref1)->bref_backend;
@@ -264,7 +300,20 @@ static int bref_cmp_router_conn(const void *bref1, const void *bref2)
            ((1000 + 1000 * b2->backend_conn_count) / b2->weight);
 }
 
-/** Compare number of global connections in backend servers */
+/*
+ * @brief Compare number of connections from all routers in two backend servers
+ *
+ * Would be better if the code that is identical to the previous function 
+ * (most of it) were not duplicated.
+ * 
+ * @param bref1 Reference to a backend server
+ * @param bref2 Reference to another backend server
+ * 
+ * @return Excess of connections to first ref over second ref (all routers),
+ * weighted if both servers have a weighting. If only one server
+ * has a non-zero weighting, then +1 if only second server has a weighting, or
+ * -1 if only first server has a weighting.
+ */
 static int bref_cmp_global_conn(const void *bref1, const void *bref2)
 {
     BACKEND *b1 = ((backend_ref_t *)bref1)->bref_backend;
@@ -288,7 +337,15 @@ static int bref_cmp_global_conn(const void *bref1, const void *bref2)
            ((1000 + 1000 * b2->backend_server->stats.n_current) / b2->weight);
 }
 
-/** Compare replication lag between backend servers */
+/*
+ * @brief Compare replication lag between backend servers
+ * 
+ * @param bref1 Reference to a backend server
+ * @param bref2 Reference to another backend server
+ * 
+ * @return -1 if first server has smaller lag, +1 if second server has
+ * smaller lag, 0 if both servers have the same lag
+ */
 static int bref_cmp_behind_master(const void *bref1, const void *bref2)
 {
     BACKEND *b1 = ((backend_ref_t *)bref1)->bref_backend;
@@ -298,7 +355,17 @@ static int bref_cmp_behind_master(const void *bref1, const void *bref2)
             : ((b1->backend_server->rlag > b2->backend_server->rlag) ? 1 : 0));
 }
 
-/** Compare number of current operations in backend servers */
+/*
+ * @brief Compare number of current operations in backend servers
+ * 
+ * @param bref1 Reference to a backend server
+ * @param bref2 Reference to another backend server
+ * 
+ * @return excess of operations on first server over second server (can be
+ * negative), weighted if both servers have a weighting. If only one server
+ * has a non-zero weighting, then +1 if only second server has a weighting, or
+ * -1 if only first server has a weighting.
+ */
 static int bref_cmp_current_load(const void *bref1, const void *bref2)
 {
     SERVER *s1 = ((backend_ref_t *)bref1)->bref_backend->backend_server;

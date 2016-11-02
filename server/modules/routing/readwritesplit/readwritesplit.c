@@ -518,6 +518,12 @@ static void *newSession(ROUTER *router_inst, SESSION *session)
     /**
      * Find a backend servers to connect to.
      * This command requires that rsession's lock is held.
+     * 
+     * NOTE TODO (Martin): It is not obvious why this is either necessary or
+     * effective. I may be mistaken, but it appears that no-one else knows 
+     * about this router session yet. Hence, taking a lock on it would appear
+     * to serve no purpose. If there is a need for locking, maybe this is
+     * the wrong lock?
      */
 
     succp = rses_begin_locked_router_action(client_rses);
