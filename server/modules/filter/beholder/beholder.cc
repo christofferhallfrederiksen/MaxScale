@@ -10,7 +10,7 @@
  * of this software will be governed by version 2 or later of the General
  * Public License.
  */
-#include <maxscale/cdefs.h>
+#include <maxscale/cppdefs.hh>
 #include <list>
 #include <memory>
 #include <string>
@@ -18,7 +18,8 @@
 #include <unordered_map>
 #include <set>
 #include <time.h>
-#include <maxscale/filter.h>
+#include <jansson.h>
+#include <maxscale/filter.hh>
 #include <maxscale/modinfo.h>
 #include <maxscale/query_classifier.h>
 #include <maxscale/alloc.h>
@@ -29,11 +30,6 @@
  *
  * Filter for calculating and reporting query characteristics
  */
-
-#define CPP_GUARD(statement)\
-    do { try { statement; }                                              \
-    catch (const std::exception& x) { MXS_ERROR("Caught standard exception: %s", x.what()); }\
-    catch (...) { MXS_ERROR("Caught unknown exception."); } } while (false)
 
 MODULE_INFO info =
 {
@@ -46,7 +42,7 @@ MODULE_INFO info =
 class Datapoint
 {
 public:
-    Datapoint(GWBUF*);
+    Datapoint(SESSION *ses, GWBUF* buf);
     ~Datapoint();
 
     /**
@@ -71,6 +67,7 @@ private:
     std::set<std::string> columns;
     std::set<std::string> databases;
     std::string to_string;
+    json_t *json;
 };
 
 /** Hashing function for Datapoint */
@@ -99,50 +96,55 @@ template <> struct equal_to<Datapoint>
 };
 }
 
-typedef struct
+class Beholder;
+
+class BeholderSession : public mxs::FilterSession
 {
+public:
+
+    BeholderSession(SESSION *session, Beholder *parent) :
+        mxs::FilterSession(session),
+        instance(parent),
+        session(session) { }
+
+    int routeQuery(GWBUF *queue);
+
+    SESSION* getSession() const
+    {
+        return session;
+    }
+
+private:
+    Beholder *instance;
+    SESSION* session;
+};
+
+class Beholder : public mxs::Filter<Beholder, BeholderSession>
+{
+public:
+    static Beholder* create(const char* name, char** options, FILTER_PARAMETER** parameters);
+    BeholderSession* newSession(SESSION* session);
+    void diagnostics(DCB* dcb);
+
+    static int64_t getCapabilities()
+    {
+        return RCAP_TYPE_CONTIGUOUS_INPUT;
+    }
+
+    // Non-API functions
+    void process_datapoint(BeholderSession *ses, GWBUF *queue);
+
+private:
     std::unordered_map<Datapoint, int> datapoints;
     time_t instance_started;
     time_t latest_group_added;
-    int    stabilization_period;
+    int stabilization_period;
     SPINLOCK lock;
-} BHD_INSTANCE;
-
-typedef struct
-{
-    DCB* dcb; /**< Client DCB, used to send error messages */
-    DOWNSTREAM down;
-} BHD_SESSION;
-
-void process_datapoint(BHD_INSTANCE *inst, BHD_SESSION *ses, GWBUF *queue);
+};
 
 MXS_BEGIN_DECLS
 
 static char version_str[] = "V1.0.0";
-
-static FILTER *createInstance(const char *name, char **options, FILTER_PARAMETER **params);
-static void *newSession(FILTER *instance, SESSION *session);
-static void closeSession(FILTER *instance, void *session);
-static void freeSession(FILTER *instance, void *session);
-static void setDownstream(FILTER *instance, void *fsession, DOWNSTREAM *downstream);
-static int routeQuery(FILTER *instance, void *fsession, GWBUF *queue);
-static void diagnostic(FILTER *instance, void *fsession, DCB *dcb);
-static uint64_t getCapabilities(void);
-
-static FILTER_OBJECT MyObject =
-{
-    createInstance,
-    newSession,
-    closeSession,
-    freeSession,
-    setDownstream,
-    NULL, // No upstream requirement
-    routeQuery,
-    NULL, // No clientReply
-    diagnostic,
-    getCapabilities,
-    NULL, // No destroyInstance
-};
 
 /**
  * Implementation of the mandatory version entry point
@@ -172,23 +174,16 @@ void ModuleInit()
  */
 FILTER_OBJECT* GetModuleObject()
 {
-    return &MyObject;
+    return &Beholder::s_object;
 }
 
-/**
- * Create an instance of the filter for a particular service
- * within MaxScale.
- *
- * @param name      The name of the instance (as defined in the config file).
- * @param options   The options for this filter
- * @param params    The array of name/value pair parameters for the filter
- *
- * @return The instance data for this new instance
- */
-static FILTER* createInstance(const char *name, char **options, FILTER_PARAMETER **params)
+MXS_END_DECLS
+
+Beholder* Beholder::create(const char* name, char** options, FILTER_PARAMETER** parameters)
 {
-    BHD_INSTANCE *inst = NULL;
-    CPP_GUARD(inst = new BHD_INSTANCE);
+    Beholder *inst = NULL;
+
+    MXS_EXCEPTION_GUARD(inst = new Beholder);
 
     if (inst)
     {
@@ -199,146 +194,60 @@ static FILTER* createInstance(const char *name, char **options, FILTER_PARAMETER
         spinlock_init(&inst->lock);
     }
 
-    return (FILTER*)inst;
+    return inst;
 }
 
-/**
- * Associate a new session with this instance of the filter.
- *
- * @param instance  The filter instance data
- * @param session   The session itself
- * @return Session specific data for this session
- */
-static void* newSession(FILTER *instance, SESSION *session)
+BeholderSession* Beholder::newSession(SESSION* session)
 {
-    BHD_SESSION *ses = NULL;
-    CPP_GUARD(ses = new BHD_SESSION);
-
-    if (ses)
-    {
-        ses->dcb = session->client_dcb;
-    }
-
+    BeholderSession *ses = NULL;
+    MXS_EXCEPTION_GUARD(ses = new BeholderSession(session, this));
     return ses;
 }
 
-/**
- * Close a session with the filter, this is the mechanism
- * by which a filter may cleanup data structure etc.
- *
- * The gatekeeper flushes the hashtable to disk every time a session is closed.
- *
- * @param instance  The filter instance data
- * @param session   The session being closed
- */
-static void closeSession(FILTER *instance, void *session)
+void Beholder::diagnostics(DCB* dcb)
 {
-}
-
-/**
- * Free the memory associated with this filter session.
- *
- * @param instance  The filter instance data
- * @param session   The session being closed
- */
-static void freeSession(FILTER *instance, void *session)
-{
-    BHD_SESSION *ses = reinterpret_cast<BHD_SESSION*>(session);
-    delete ses;
-}
-
-/**
- * Set the downstream component for this filter.
- *
- * @param instance  The filter instance data
- * @param session   The session being closed
- * @param downstream    The downstream filter or router
- */
-static void setDownstream(FILTER *instance, void *session, DOWNSTREAM *downstream)
-{
-    BHD_SESSION *ses = reinterpret_cast<BHD_SESSION*>(session);
-    ses->down = *downstream;
-}
-
-/**
- * @brief Main routing function
- *
- * @param instance  The filter instance data
- * @param session   The filter session
- * @param queue     The query data
- * @return 1 on success, 0 on error
- */
-static int routeQuery(FILTER *instance, void *session, GWBUF *queue)
-{
-    BHD_INSTANCE *inst = reinterpret_cast<BHD_INSTANCE*>(instance);
-    BHD_SESSION *ses = reinterpret_cast<BHD_SESSION*>(session);
-
-    if (modutil_is_SQL(queue))
-    {
-        CPP_GUARD(process_datapoint(inst, ses, queue));
-    }
-
-    return ses->down.routeQuery(ses->down.instance, ses->down.session, queue);
-}
-
-/**
- * @brief Diagnostics routine
- *
- * @param   instance    The filter instance
- * @param   fsession    Filter session
- * @param   dcb         The DCB for output
- */
-static void diagnostic(FILTER *instance, void *fsession, DCB *dcb)
-{
-    BHD_INSTANCE *inst = reinterpret_cast<BHD_INSTANCE*>(instance);
-
-    for (const auto& i : inst->datapoints)
+    for (const auto& i : this->datapoints)
     {
         dcb_printf(dcb, "%s: %d\n", i.first.toString().c_str(), i.second);
     }
 }
 
-/**
- * @brief Capability routine.
- *
- * @return The capabilities of the filter.
- */
-static uint64_t getCapabilities(void)
+int BeholderSession::routeQuery(GWBUF *queue)
 {
-    return RCAP_TYPE_STMT_INPUT;
+    if (modutil_is_SQL(queue))
+    {
+        MXS_EXCEPTION_GUARD(this->instance->process_datapoint(this, queue));
+    }
+
+    return mxs::FilterSession::routeQuery(queue);
 }
 
-MXS_END_DECLS
-
-/**
- * Internal code
- */
-
-void process_datapoint(BHD_INSTANCE *inst, BHD_SESSION *ses, GWBUF *queue)
+void Beholder::process_datapoint(BeholderSession *ses, GWBUF *queue)
 {
-    Datapoint p(queue);
-    std::unordered_map<Datapoint, int>::iterator iter = inst->datapoints.find(p);
+    Datapoint p(ses->getSession(), queue);
+    std::unordered_map<Datapoint, int>::iterator iter = this->datapoints.find(p);
 
-    if (iter != inst->datapoints.end())
+    if (iter != this->datapoints.end())
     {
-        inst->datapoints[p]++;
+        this->datapoints[p]++;
     }
     else
     {
-        inst->datapoints[p] =  1;
-        inst->latest_group_added = time(NULL);
+        this->datapoints[p] =  1;
+        this->latest_group_added = time(NULL);
 
-        if (inst->latest_group_added - inst->instance_started > inst->stabilization_period)
+        if (this->latest_group_added - this->instance_started > this->stabilization_period)
         {
             char *sql = modutil_get_SQL(queue);
+            DCB *dcb = ses->getSession()->client_dcb;
             MXS_WARNING("Unexpected query behavior from '%s@%s': %s",
-                        ses->dcb->user, ses->dcb->remote, sql ? sql : "(SQL extraction failed)");
+                        dcb->user, dcb->remote, sql ? sql : "(SQL extraction failed)");
             MXS_FREE(sql);
         }
     }
 }
 
-Datapoint::Datapoint(GWBUF* buf):
+Datapoint::Datapoint(SESSION *ses, GWBUF* buf):
     op(qc_get_operation(buf)), type(qc_get_type(buf)), select(0), subselect(0),
     set(0), where(0), group(0), to_string("")
 {
@@ -346,71 +255,95 @@ Datapoint::Datapoint(GWBUF* buf):
     this->n_fields = 0;
     qc_get_field_info(buf, &infos, &this->n_fields);
 
+    json_t *obj = json_object();
+
+    json_t *s_user = json_string(ses->client_dcb->user);
+    json_object_set_new(obj, "user", s_user);
+
+    json_t *s_addr = json_string(ses->client_dcb->remote);
+    json_object_set_new(obj, "address", s_addr);
+
+    char *tm = qc_typemask_to_string(this->type);
+    json_t *s_tm = json_string(tm);
+    json_object_set_new(obj, "type", s_tm);
+    MXS_FREE(tm);
+
+    const char *qc_op = qc_op_to_string(this->op);
+    json_t *s_qc_op = json_string(qc_op);
+    json_object_set_new(obj, "op", s_qc_op);
+
+    char *sql = modutil_get_SQL(buf);
+    json_t *s_sql = json_string(sql);
+    json_object_set_new(obj, "sql", s_sql);
+    MXS_FREE(sql);
+
+    char *canonical = modutil_get_canonical(buf);
+    json_t *s_canonical = json_string(canonical);
+    json_object_set_new(obj, "canonical_sql", s_canonical);
+    MXS_FREE(canonical);
+
+    json_t *arr = json_array();
+
     for (size_t i = 0; i < this->n_fields; i++)
     {
-        this->columns.insert(std::string(infos[i].column));
+        json_t *item = json_object();
+        json_t *col = json_string(infos[i].column);
+        json_object_set(obj, "column", col);
 
         if (infos[i].table)
         {
-            this->tables.insert(std::string(infos[i].table));
+            json_t *tab = json_string(infos[i].table);
+            json_object_set(obj, "table", tab);
         }
 
         if (infos[i].database)
         {
-            this->databases.insert(std::string(infos[i].database));
+            json_t *db = json_string(infos[i].database);
+            json_object_set(obj, "db", db);
         }
+
+        json_t *used_in = json_array();
 
         if (infos[i].usage & QC_USED_IN_SELECT)
         {
-            this->select++;
+            json_t *usage = json_string("select");
+            json_array_append(used_in, usage);
         }
-        else if (infos[i].usage & QC_USED_IN_SUBSELECT)
+        if (infos[i].usage & QC_USED_IN_SUBSELECT)
         {
-            this->subselect++;
+            json_t *usage = json_string("subselect");
+            json_array_append(used_in, usage);
         }
-        else if (infos[i].usage & QC_USED_IN_WHERE)
+        if (infos[i].usage & QC_USED_IN_WHERE)
         {
-            this->where++;
+            json_t *usage = json_string("where");
+            json_array_append(used_in, usage);
         }
-        else if (infos[i].usage & QC_USED_IN_SET)
+        if (infos[i].usage & QC_USED_IN_SET)
         {
-            this->set++;
+            json_t *usage = json_string("set");
+            json_array_append(used_in, usage);
         }
-        else if (infos[i].usage & QC_USED_IN_GROUP_BY)
+        if (infos[i].usage & QC_USED_IN_GROUP_BY)
         {
-            this->group++;
+            json_t *usage = json_string("group_by");
+            json_array_append(used_in, usage);
         }
+
+        json_object_set_new(item, "usage", used_in);
+        json_array_append(arr, item);
     }
 
-    char *tm = qc_typemask_to_string(this->type);
-    const char *qc_op = qc_op_to_string(this->op);
-
-    std::stringstream ss;
-
-    ss << tm << qc_op << this->n_fields << this->select << this->subselect
-       << this->set << this->where << this->group;
-
-    for (const auto& a : this->columns)
-    {
-        ss << a;
-    }
-
-    for (const auto& a : this->tables)
-    {
-        ss << a;
-    }
-
-    for (const auto& a : this->databases)
-    {
-        ss << a;
-    }
-
-    this->to_string = ss.str();
-    MXS_FREE(tm);
+    json_object_set_new(obj, "fields", arr);
+    char *json_str = json_dumps(obj, JSON_PRESERVE_ORDER);
+    this->to_string = std::string(json_str);
+    this->json = obj;
+    MXS_FREE(json_str);
 }
 
 Datapoint::~Datapoint()
 {
+    json_decref(this->json);
 }
 
 const std::string& Datapoint::toString() const
