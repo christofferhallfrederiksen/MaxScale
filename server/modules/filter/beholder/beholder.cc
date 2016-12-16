@@ -13,17 +13,18 @@
 #include <maxscale/cppdefs.hh>
 #include <list>
 #include <memory>
-#include <string>
 #include <sstream>
 #include <unordered_map>
-#include <set>
 #include <time.h>
-#include <jansson.h>
+#include <string>
 #include <maxscale/filter.hh>
 #include <maxscale/modinfo.h>
-#include <maxscale/query_classifier.h>
 #include <maxscale/alloc.h>
 #include <maxscale/modutil.h>
+#include <maxscale/modulecmd.h>
+
+#include "datapoint.hh"
+#include "maxscale/spinlock.hh"
 
 /**
  * @file
@@ -38,63 +39,6 @@ MODULE_INFO info =
     FILTER_VERSION,
     "Query characteristics filter"
 };
-
-class Datapoint
-{
-public:
-    Datapoint(SESSION *ses, GWBUF* buf);
-    ~Datapoint();
-
-    /**
-     * Return string representation of this datapoint
-     *
-     * @return String representation of this datapoint
-     */
-    const std::string& toString() const;
-
-    bool operator ==(const Datapoint& a) const;
-
-private:
-    qc_query_op_t op;
-    uint32_t type;
-    size_t n_fields;
-    int select;
-    int subselect;
-    int set;
-    int where;
-    int group;
-    std::set<std::string> tables;
-    std::set<std::string> columns;
-    std::set<std::string> databases;
-    std::string to_string;
-    json_t *json;
-};
-
-/** Hashing function for Datapoint */
-namespace std
-{
-template<> struct hash<Datapoint>
-{
-    typedef Datapoint argument_type;
-    typedef std::size_t result_type;
-    result_type operator()(argument_type const& s) const
-    {
-        return std::hash<std::string> {}(s.toString());
-    }
-};
-
-template <> struct equal_to<Datapoint>
-{
-    typedef Datapoint first_argument_type;
-    typedef Datapoint second_argument_type;
-    typedef bool result_type;
-
-    result_type operator()(const first_argument_type& a, const second_argument_type& b) const
-    {
-        return a == b;
-    }
-};
-}
 
 class Beholder;
 
@@ -133,6 +77,8 @@ public:
 
     // Non-API functions
     void process_datapoint(BeholderSession *ses, GWBUF *queue);
+    void clear_data();
+    std::string toString();
 
 private:
     std::unordered_map<Datapoint, int> datapoints;
@@ -156,12 +102,42 @@ char* version()
     return version_str;
 }
 
+bool beholder_show_data(const MODULECMD_ARG *args)
+{
+    Beholder *beholder = reinterpret_cast<Beholder*> (args->argv[1].value.filter->filter);
+    DCB *dcb = args->argv[0].value.dcb;
+
+    std::string str = beholder->toString();
+    dcb_printf(dcb, "%s\n", str.c_str());
+
+    return true;
+}
+
+bool beholder_clear_data(const MODULECMD_ARG *args)
+{
+    Beholder *beholder = reinterpret_cast<Beholder*> (args->argv[1].value.filter->filter);
+    beholder->clear_data();
+    return true;
+}
+
 /**
  * The module initialization routine, called when the module
  * is first loaded.
  */
 void ModuleInit()
 {
+    modulecmd_arg_type_t args[] =
+    {
+        { MODULECMD_ARG_OUTPUT, "DCB for output"},
+        { MODULECMD_ARG_FILTER, "Show data for this filter" }
+    };
+    modulecmd_register_command("beholder", "data", beholder_show_data, 2, args);
+
+    modulecmd_arg_type_t reset_args[] =
+    {
+        { MODULECMD_ARG_FILTER, "Clear data for this filter" }
+    };
+    modulecmd_register_command("beholder", "data/clear", beholder_clear_data, 1, reset_args);
 }
 
 /**
@@ -229,11 +205,11 @@ void Beholder::process_datapoint(BeholderSession *ses, GWBUF *queue)
 
     if (iter != this->datapoints.end())
     {
-        this->datapoints[p]++;
+        iter->second++;
     }
     else
     {
-        this->datapoints[p] =  1;
+        this->datapoints[std::move(p)] =  1;
         this->latest_group_added = time(NULL);
 
         if (this->latest_group_added - this->instance_started > this->stabilization_period)
@@ -247,117 +223,27 @@ void Beholder::process_datapoint(BeholderSession *ses, GWBUF *queue)
     }
 }
 
-Datapoint::Datapoint(SESSION *ses, GWBUF* buf):
-    op(qc_get_operation(buf)), type(qc_get_type(buf)), select(0), subselect(0),
-    set(0), where(0), group(0), to_string("")
+std::string Beholder::toString()
 {
-    const QC_FIELD_INFO *infos = NULL;
-    this->n_fields = 0;
-    qc_get_field_info(buf, &infos, &this->n_fields);
-
-    json_t *obj = json_object();
-
-    json_t *s_user = json_string(ses->client_dcb->user);
-    json_object_set_new(obj, "user", s_user);
-
-    json_t *s_addr = json_string(ses->client_dcb->remote);
-    json_object_set_new(obj, "address", s_addr);
-
-    char *tm = qc_typemask_to_string(this->type);
-    json_t *s_tm = json_string(tm);
-    json_object_set_new(obj, "type", s_tm);
-    MXS_FREE(tm);
-
-    const char *qc_op = qc_op_to_string(this->op);
-    json_t *s_qc_op = json_string(qc_op);
-    json_object_set_new(obj, "op", s_qc_op);
-
-    char *sql = modutil_get_SQL(buf);
-    json_t *s_sql = json_string(sql);
-    json_object_set_new(obj, "sql", s_sql);
-    MXS_FREE(sql);
-
-    char *canonical = modutil_get_canonical(buf);
-    json_t *s_canonical = json_string(canonical);
-    json_object_set_new(obj, "canonical_sql", s_canonical);
-    MXS_FREE(canonical);
-
     json_t *arr = json_array();
+    mxs::SpinLockGuard(this->lock);
 
-    for (size_t i = 0; i < this->n_fields; i++)
+    for (auto& a : this->datapoints)
     {
-        json_t *item = json_object();
-        json_t *col = json_string(infos[i].column);
-        json_object_set(obj, "column", col);
-
-        if (infos[i].table)
-        {
-            json_t *tab = json_string(infos[i].table);
-            json_object_set(obj, "table", tab);
-        }
-
-        if (infos[i].database)
-        {
-            json_t *db = json_string(infos[i].database);
-            json_object_set(obj, "db", db);
-        }
-
-        json_t *used_in = json_array();
-
-        if (infos[i].usage & QC_USED_IN_SELECT)
-        {
-            json_t *usage = json_string("select");
-            json_array_append(used_in, usage);
-        }
-        if (infos[i].usage & QC_USED_IN_SUBSELECT)
-        {
-            json_t *usage = json_string("subselect");
-            json_array_append(used_in, usage);
-        }
-        if (infos[i].usage & QC_USED_IN_WHERE)
-        {
-            json_t *usage = json_string("where");
-            json_array_append(used_in, usage);
-        }
-        if (infos[i].usage & QC_USED_IN_SET)
-        {
-            json_t *usage = json_string("set");
-            json_array_append(used_in, usage);
-        }
-        if (infos[i].usage & QC_USED_IN_GROUP_BY)
-        {
-            json_t *usage = json_string("group_by");
-            json_array_append(used_in, usage);
-        }
-
-        json_object_set_new(item, "usage", used_in);
-        json_array_append(arr, item);
+        json_array_append_new(arr, a.first.toJSON());
     }
 
-    json_object_set_new(obj, "fields", arr);
-    char *json_str = json_dumps(obj, JSON_PRESERVE_ORDER);
-    this->to_string = std::string(json_str);
-    this->json = obj;
-    MXS_FREE(json_str);
+    char *json = json_dumps(arr, JSON_PRESERVE_ORDER);
+    ss_dassert(json);
+    std::string s(json);
+    MXS_FREE(json);
+    return s;
 }
 
-Datapoint::~Datapoint()
+void Beholder::clear_data()
 {
-    json_decref(this->json);
-}
-
-const std::string& Datapoint::toString() const
-{
-    return this->to_string;
-}
-
-bool Datapoint::operator ==(const Datapoint& a) const
-{
-    return this->op == a.op &&
-           this->type == a.type &&
-           this->n_fields == a.n_fields &&
-           this->select == a.select &&
-           this->set == a.set &&
-           this->where == a.where &&
-           this->group == a.group;
+    this->datapoints.clear();
+    time_t now = time(NULL);
+    this->instance_started = now;
+    this->latest_group_added = now;
 }
