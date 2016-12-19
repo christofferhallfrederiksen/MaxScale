@@ -11,7 +11,6 @@
  * Public License.
  */
 #include <maxscale/cppdefs.hh>
-#include <list>
 #include <memory>
 #include <sstream>
 #include <unordered_map>
@@ -22,9 +21,11 @@
 #include <maxscale/alloc.h>
 #include <maxscale/modutil.h>
 #include <maxscale/modulecmd.h>
+#include <maxscale/spinlock.hh>
 
 #include "datapoint.hh"
-#include "maxscale/spinlock.hh"
+#include "file_relay.hh"
+#include "redis_relay.hh"
 
 /**
  * @file
@@ -81,7 +82,12 @@ public:
     std::string toString();
 
 private:
+    /** Constructors */
+    Beholder(const char* name, char** options, FILTER_PARAMETER** parameters);
+    Beholder operator=(const Beholder& b);
+
     std::unordered_map<Datapoint, int> datapoints;
+    std::unique_ptr<Relay> relay;
     time_t instance_started;
     time_t latest_group_added;
     int stabilization_period;
@@ -155,20 +161,63 @@ FILTER_OBJECT* GetModuleObject()
 
 MXS_END_DECLS
 
+static Relay* create_new_relay(const char *uri)
+{
+    if (strstr(uri, "file://") == uri)
+    {
+        uri += 7;
+        return new FileRelay(uri);
+    }
+    else if (strstr(uri, "redis://") == uri)
+    {
+        uri += 8;
+        return new RedisRelay(uri);
+    }
+    else
+    {
+        string err("Invalid relay URI: ");
+        err += uri;
+        throw std::runtime_error(err.c_str());
+    }
+}
+
+Beholder::Beholder(const char* name, char** options, FILTER_PARAMETER** parameters)
+{
+    time_t now = time(NULL);
+    this->instance_started = now;
+    this->latest_group_added = now;
+    this->stabilization_period = 300;
+    spinlock_init(&this->lock);
+
+    const char *uri = NULL;
+
+    for (int i = 0; parameters[i]; i++)
+    {
+        if (strcmp(parameters[i]->name, "uri") == 0)
+        {
+            uri = parameters[i]->value;
+        }
+        else if (!filter_standard_parameter(parameters[i]->name))
+        {
+            std::string err("Unknown parameter defined:");
+            err += parameters[i]->name;
+            throw std::runtime_error(err);
+        }
+    }
+
+    if (!uri)
+    {
+        throw std::runtime_error("No 'uri' parameter defined.");
+    }
+
+    this->relay = std::unique_ptr<Relay>(create_new_relay(uri));
+}
+
 Beholder* Beholder::create(const char* name, char** options, FILTER_PARAMETER** parameters)
 {
     Beholder *inst = NULL;
 
-    MXS_EXCEPTION_GUARD(inst = new Beholder);
-
-    if (inst)
-    {
-        time_t now = time(NULL);
-        inst->instance_started = now;
-        inst->latest_group_added = now;
-        inst->stabilization_period = 300;
-        spinlock_init(&inst->lock);
-    }
+    MXS_EXCEPTION_GUARD(inst = new Beholder(name, options, parameters));
 
     return inst;
 }
@@ -202,6 +251,8 @@ void Beholder::process_datapoint(BeholderSession *ses, GWBUF *queue)
 {
     Datapoint p(ses->getSession(), queue);
     std::unordered_map<Datapoint, int>::iterator iter = this->datapoints.find(p);
+
+    this->relay->enqueue(p);
 
     if (iter != this->datapoints.end())
     {
