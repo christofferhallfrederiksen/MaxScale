@@ -23,6 +23,7 @@
 #include <maxscale/authenticator.h>
 #include <maxscale/ssl.h>
 #include <maxscale/modinfo.h>
+#include <maxscale/poll_core.h>
 #include <netinet/in.h>
 
 MXS_BEGIN_DECLS
@@ -184,6 +185,7 @@ typedef enum
  */
 typedef struct dcb
 {
+    MXS_POLL_DATA   poll;
     skygw_chk_t     dcb_chk_top;
     bool            dcb_errhandle_called; /*< this can be called only once */
     bool            dcb_is_zombie;  /**< Whether the DCB is in the zombie list */
@@ -228,15 +230,14 @@ typedef struct dcb
     bool            was_persistent;  /**< Whether this DCB was in the persistent pool */
     struct
     {
-        int id; /**< The owning thread's ID */
         struct dcb *next; /**< Next DCB in owning thread's list */
         struct dcb *tail; /**< Last DCB in owning thread's list */
     } thread;
     skygw_chk_t     dcb_chk_tail;
 } DCB;
 
-#define DCB_INIT {.dcb_chk_top = CHK_NUM_DCB, \
-    .evq = DCBEVENTQ_INIT, .ip = {0}, .func = {0}, .authfunc = {0}, \
+#define DCB_INIT {.poll.thread.id = 0, .dcb_chk_top = CHK_NUM_DCB, \
+    .evq = DCBEVENTQ_INIT, .ipv4 = {0}, .func = {0}, .authfunc = {0}, \
     .stats = {0}, .memdata = DCBMM_INIT, \
     .fd = DCBFD_CLOSED, .stats = DCBSTATS_INIT, .ssl_state = SSL_HANDSHAKE_UNKNOWN, \
     .state = DCB_STATE_ALLOC, .dcb_chk_tail = CHK_NUM_DCB, \
