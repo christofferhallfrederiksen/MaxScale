@@ -48,7 +48,7 @@ static int cdc_write_event(DCB *dcb);
 static int cdc_write(DCB *dcb, GWBUF *queue);
 static int cdc_error(DCB *dcb);
 static int cdc_hangup(DCB *dcb);
-static int cdc_accept(DCB *dcb);
+static int cdc_accept(DCB *dcb, int thread_id);
 static int cdc_close(DCB *dcb);
 static int cdc_listen(DCB *dcb, char *config);
 static CDC_protocol *cdc_protocol_init(DCB* dcb);
@@ -275,7 +275,7 @@ cdc_hangup(DCB *dcb)
  * @param dcb    The descriptor control block
  */
 static int
-cdc_accept(DCB *listener)
+cdc_accept(DCB *listener, int thread_id)
 {
     int n_connect = 0;
     DCB *client_dcb;
@@ -299,7 +299,7 @@ cdc_accept(DCB *listener)
         /* Dummy session */
         client_dcb->session = session_set_dummy(client_dcb);
 
-        if (NULL == client_dcb->session || poll_add_dcb(client_dcb))
+        if (NULL == client_dcb->session || poll_add_dcb(client_dcb, thread_id))
         {
             dcb_close(client_dcb);
             continue;

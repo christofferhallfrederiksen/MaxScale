@@ -66,10 +66,12 @@ void poll_fake_read_event(DCB *dcb);
  * Add a DCB to the set of descriptors within the polling
  * environment.
  *
- * @param dcb   The descriptor to add to the poll
+ * @param dcb       The descriptor to add to the poll
+ * @param thread_id The thread that should handle the connection.
+ *                  Use -1 to allow the polling mechanism to choose the thread.
  * @return      -1 on error or 0 on success
  */
-int poll_add_dcb(DCB *);
+int poll_add_dcb(DCB *dcb, int thread_id);
 
 /**
  * Remove a descriptor from the set of descriptors within the

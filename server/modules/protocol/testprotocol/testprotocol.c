@@ -50,7 +50,7 @@ static int test_hangup(DCB *dcb)
 {
     return 1;
 }
-static int test_accept(DCB *dcb)
+static int test_accept(DCB *dcb, int thread_id)
 {
     return 1;
 }

@@ -68,7 +68,7 @@ static void process_finish(void);
 static int thread_init(void);
 static void thread_finish(void);
 
-static int gw_MySQLAccept(DCB *listener);
+static int gw_MySQLAccept(DCB *listener, int thread_id);
 static int gw_MySQLListener(DCB *listener, char *config_bind);
 static int gw_read_client_event(DCB* dcb);
 static int gw_write_client_event(DCB *dcb);
@@ -86,7 +86,7 @@ static int gw_read_normal_data(DCB *dcb, GWBUF *read_buffer, int nbytes_read);
 static int gw_read_finish_processing(DCB *dcb, GWBUF *read_buffer, uint64_t capabilities);
 extern char* create_auth_fail_str(char *username, char *hostaddr, char *sha1, char *db, int);
 static bool ensure_complete_packet(DCB *dcb, GWBUF **read_buffer, int nbytes_read);
-static void gw_process_one_new_client(DCB *client_dcb);
+static void gw_process_one_new_client(DCB *client_dcb, int thread_id);
 
 /*
  * The "module object" for the mysqld client protocol module.
@@ -1213,7 +1213,7 @@ int gw_MySQLListener(DCB *listen_dcb, char *config_bind)
  * @return 0 in success, 1 in failure
  *
  */
-int gw_MySQLAccept(DCB *listener)
+int gw_MySQLAccept(DCB *listener, int thread_id)
 {
     DCB *client_dcb;
     MySQLProtocol *protocol;
@@ -1222,13 +1222,13 @@ int gw_MySQLAccept(DCB *listener)
 
     if (DCB_STATE_WAITING == listener->state)
     {
-        gw_process_one_new_client(listener);
+        gw_process_one_new_client(listener, thread_id);
     }
     else
     {
         while ((client_dcb = dcb_accept(listener)) != NULL)
         {
-            gw_process_one_new_client(client_dcb);
+            gw_process_one_new_client(client_dcb, thread_id);
         } /**< while client_dcb != NULL */
     }
 
@@ -1236,7 +1236,7 @@ int gw_MySQLAccept(DCB *listener)
     return 1;
 }
 
-static void gw_process_one_new_client(DCB *client_dcb)
+static void gw_process_one_new_client(DCB *client_dcb, int thread_id)
 {
     MySQLProtocol *protocol;
 
@@ -1273,7 +1273,7 @@ static void gw_process_one_new_client(DCB *client_dcb)
      * change state to DCB_STATE_POLLING so that
      * thread which wakes up sees correct state.
      */
-    if (poll_add_dcb(client_dcb) == -1)
+    if (poll_add_dcb(client_dcb, thread_id) == -1)
     {
         /* Send a custom error as MySQL command reply */
         mysql_send_custom_error(client_dcb,

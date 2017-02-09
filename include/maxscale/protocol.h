@@ -57,7 +57,7 @@ typedef struct mxs_protocol
     int32_t (*write_ready)(struct dcb *);
     int32_t (*error)(struct dcb *);
     int32_t (*hangup)(struct dcb *);
-    int32_t (*accept)(struct dcb *);
+    int32_t (*accept)(struct dcb *, int thread_id);
     int32_t (*connect)(struct dcb *, struct server *, struct session *);
     int32_t (*close)(struct dcb *);
     int32_t (*listen)(struct dcb *, char *);

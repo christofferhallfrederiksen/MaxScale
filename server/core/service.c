@@ -596,7 +596,7 @@ bool serviceStartListener(SERVICE *service, const char *name)
         if (strcmp(port->name, name) == 0)
         {
             if (port->listener && port->listener->session->state == SESSION_STATE_LISTENER_STOPPED &&
-                poll_add_dcb(port->listener) == 0)
+                poll_add_dcb(port->listener, -1) == 0)
             {
                 port->listener->session->state = SESSION_STATE_LISTENER;
                 rval = true;
@@ -675,7 +675,7 @@ bool serviceStart(SERVICE *service)
     {
         if (port->listener && port->listener->session->state == SESSION_STATE_LISTENER_STOPPED)
         {
-            if (poll_add_dcb(port->listener) == 0)
+            if (poll_add_dcb(port->listener, -1) == 0)
             {
                 port->listener->session->state = SESSION_STATE_LISTENER;
                 listeners++;

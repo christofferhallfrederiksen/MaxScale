@@ -61,7 +61,7 @@ static int maxscaled_write_event(DCB *dcb);
 static int maxscaled_write(DCB *dcb, GWBUF *queue);
 static int maxscaled_error(DCB *dcb);
 static int maxscaled_hangup(DCB *dcb);
-static int maxscaled_accept(DCB *dcb);
+static int maxscaled_accept(DCB *dcb, int thread_id);
 static int maxscaled_close(DCB *dcb);
 static int maxscaled_listen(DCB *dcb, char *config);
 static char *mxsd_default_auth();
@@ -339,7 +339,7 @@ static int maxscaled_hangup(DCB *dcb)
  * @param dcb   The descriptor control block
  * @return The number of new connections created
  */
-static int maxscaled_accept(DCB *listener)
+static int maxscaled_accept(DCB *listener, int thread_id)
 {
     int n_connect = 0;
     DCB *client_dcb;
@@ -373,7 +373,7 @@ static int maxscaled_accept(DCB *listener)
 
         client_dcb->session = session_alloc(listener->session->service, client_dcb);
 
-        if (NULL == client_dcb->session || poll_add_dcb(client_dcb))
+        if (NULL == client_dcb->session || poll_add_dcb(client_dcb, thread_id))
         {
             dcb_close(client_dcb);
             continue;

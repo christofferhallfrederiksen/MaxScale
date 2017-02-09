@@ -318,7 +318,7 @@ poll_init()
     max_poll_sleep = config_pollsleep();
 }
 
-int poll_add_dcb(DCB *dcb)
+int poll_add_dcb(DCB *dcb, int owner)
 {
     int rc = -1;
     dcb_state_t old_state = dcb->state;
@@ -376,15 +376,20 @@ int poll_add_dcb(DCB *dcb)
      * The only possible failure that will not cause a crash is
      * running out of system resources.
      */
-    int owner = 0;
-
-    if (dcb->dcb_role == DCB_ROLE_BACKEND_HANDLER)
+    if (owner == -1)
     {
-        owner = dcb->session->client_dcb->thread.id;
+        if (dcb->dcb_role == DCB_ROLE_BACKEND_HANDLER)
+        {
+            owner = dcb->session->client_dcb->thread.id;
+        }
+        else
+        {
+            owner = (unsigned int)atomic_add(&next_epoll_fd, 1) % n_threads;
+        }
     }
     else
     {
-        owner = (unsigned int)atomic_add(&next_epoll_fd, 1) % n_threads;
+        ss_dassert(owner >= 0 && owner < n_threads);
     }
 
     dcb->thread.id = owner;
@@ -988,7 +993,7 @@ process_pollq(int thread_id, struct epoll_event *event)
 
             if (poll_dcb_session_check(dcb, "accept"))
             {
-                dcb->func.accept(dcb);
+                dcb->func.accept(dcb, thread_id);
             }
         }
         else

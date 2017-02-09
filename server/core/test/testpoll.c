@@ -76,7 +76,7 @@ test1()
     }
 
 
-    if ((eno = poll_add_dcb(dcb)) != 0)
+    if ((eno = poll_add_dcb(dcb, -1)) != 0)
     {
         ss_dfprintf(stderr, "\nError on function call: poll_add_dcb() returned %d.\n", eno);
         return 1;
@@ -88,7 +88,7 @@ test1()
         return 1;
     }
 
-    if ((eno = poll_add_dcb(dcb)) != 0)
+    if ((eno = poll_add_dcb(dcb, -1)) != 0)
     {
         ss_dfprintf(stderr, "\nError on function call: poll_add_dcb() returned %d.\n", eno);
         return 1;

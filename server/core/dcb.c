@@ -783,7 +783,7 @@ dcb_connect(SERVER *server, MXS_SESSION *session, const char *protocol)
     /**
      * Add the dcb in the poll set
      */
-    rc = poll_add_dcb(dcb);
+    rc = poll_add_dcb(dcb, -1);
 
     if (rc)
     {
@@ -3160,7 +3160,7 @@ dcb_listen(DCB *listener, const char *config, const char *protocol_name)
     listener->fd = listener_socket;
 
     // add listening socket to poll structure
-    if (poll_add_dcb(listener) != 0)
+    if (poll_add_dcb(listener, -1) != 0)
     {
         MXS_ERROR("MaxScale encountered system limit while "
                   "attempting to register on an epoll instance.");
