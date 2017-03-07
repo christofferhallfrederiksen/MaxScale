@@ -71,27 +71,27 @@ bool RedisRelay::send(const std::string& data)
     {
         switch (reply->type)
         {
-            case REDIS_REPLY_INTEGER:
-                rval = true;
-                break;
+        case REDIS_REPLY_INTEGER:
+            rval = true;
+            break;
 
-            case REDIS_REPLY_ERROR:
-            case REDIS_REPLY_STRING:
-            case REDIS_REPLY_STATUS:
-                MXS_ERROR("Redis server replied with a message: %.*s", (int)reply->len, reply->str);
-                break;
+        case REDIS_REPLY_ERROR:
+        case REDIS_REPLY_STRING:
+        case REDIS_REPLY_STATUS:
+            MXS_ERROR("Redis server replied with a message: %.*s", (int)reply->len, reply->str);
+            break;
 
-            case REDIS_REPLY_NIL:
-                MXS_ERROR("Redis server replied with a nil object.");
-                break;
+        case REDIS_REPLY_NIL:
+            MXS_ERROR("Redis server replied with a nil object.");
+            break;
 
-            case REDIS_REPLY_ARRAY:
-                MXS_ERROR("Redis server replied with an array.");
-                break;
+        case REDIS_REPLY_ARRAY:
+            MXS_ERROR("Redis server replied with an array.");
+            break;
 
-            default:
-                ss_dassert(false);
-                break;
+        default:
+            ss_dassert(false);
+            break;
         }
 
         freeReplyObject(reply);

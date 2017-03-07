@@ -14,7 +14,7 @@
 #include <stdexcept>
 
 #include "datapoint.hh"
-#include "file_relay.hh"
+#include "relay.hh"
 
 #define DEFAULT_MAX_QUEUE_SIZE 1024
 

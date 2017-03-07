@@ -24,7 +24,7 @@
 class Datapoint
 {
 public:
-    Datapoint(SESSION *ses, GWBUF* buf);
+    Datapoint(MXS_SESSION *ses, GWBUF* buf);
     Datapoint(Datapoint&& d);
     ~Datapoint();
 

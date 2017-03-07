@@ -15,8 +15,8 @@
 #include <maxscale/alloc.h>
 #include <maxscale/modutil.h>
 
-Datapoint::Datapoint(SESSION *ses, GWBUF* buf):
-    op(qc_get_operation(buf)), type(qc_get_type(buf))
+Datapoint::Datapoint(MXS_SESSION *ses, GWBUF* buf):
+    op(qc_get_operation(buf)), type(qc_get_type_mask(buf))
 {
     const QC_FIELD_INFO *infos = NULL;
     size_t n_fields = 0;

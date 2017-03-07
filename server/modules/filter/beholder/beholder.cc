@@ -33,42 +33,34 @@
  * Filter for calculating and reporting query characteristics
  */
 
-MODULE_INFO info =
-{
-    MODULE_API_FILTER,
-    MODULE_ALPHA_RELEASE,
-    FILTER_VERSION,
-    "Query characteristics filter"
-};
-
 class Beholder;
 
 class BeholderSession : public mxs::FilterSession
 {
 public:
 
-    BeholderSession(SESSION *session, Beholder *parent) :
+    BeholderSession(MXS_SESSION *session, Beholder *parent) :
         mxs::FilterSession(session),
         instance(parent),
         session(session) { }
 
     int routeQuery(GWBUF *queue);
 
-    SESSION* getSession() const
+    MXS_SESSION* getSession() const
     {
         return session;
     }
 
 private:
     Beholder *instance;
-    SESSION* session;
+    MXS_SESSION* session;
 };
 
 class Beholder : public mxs::Filter<Beholder, BeholderSession>
 {
 public:
-    static Beholder* create(const char* name, char** options, FILTER_PARAMETER** parameters);
-    BeholderSession* newSession(SESSION* session);
+    static Beholder* create(const char* name, char** options, MXS_CONFIG_PARAMETER* parameters);
+    BeholderSession* newSession(MXS_SESSION* session);
     void diagnostics(DCB* dcb);
 
     static int64_t getCapabilities()
@@ -83,34 +75,23 @@ public:
 
 private:
     /** Constructors */
-    Beholder(const char* name, char** options, FILTER_PARAMETER** parameters);
+    Beholder(const char* name, char** options, MXS_CONFIG_PARAMETER* parameters);
     Beholder operator=(const Beholder& b);
 
     std::unordered_map<Datapoint, int> datapoints;
-    std::unique_ptr<Relay> relay;
     time_t instance_started;
     time_t latest_group_added;
     int stabilization_period;
+    std::unique_ptr<Relay> relay;
     SPINLOCK lock;
 };
 
 MXS_BEGIN_DECLS
 
-static char version_str[] = "V1.0.0";
-
-/**
- * Implementation of the mandatory version entry point
- *
- * @return version string of the module
- */
-char* version()
-{
-    return version_str;
-}
-
 bool beholder_show_data(const MODULECMD_ARG *args)
 {
-    Beholder *beholder = reinterpret_cast<Beholder*> (args->argv[1].value.filter->filter);
+    MXS_FILTER *filter = filter_def_get_instance(args->argv[1].value.filter);
+    Beholder *beholder = reinterpret_cast<Beholder*> (filter);
     DCB *dcb = args->argv[0].value.dcb;
 
     std::string str = beholder->toString();
@@ -121,16 +102,20 @@ bool beholder_show_data(const MODULECMD_ARG *args)
 
 bool beholder_clear_data(const MODULECMD_ARG *args)
 {
-    Beholder *beholder = reinterpret_cast<Beholder*> (args->argv[1].value.filter->filter);
+    MXS_FILTER *filter = filter_def_get_instance(args->argv[1].value.filter);
+    Beholder *beholder = reinterpret_cast<Beholder*> (filter);
     beholder->clear_data();
     return true;
 }
 
 /**
- * The module initialization routine, called when the module
- * is first loaded.
+ * The module entry point routine. It is this routine that must populate
+ * the structure that is referred to as the "module object", this is a
+ * structure with the set of external entry points for this module.
+ *
+ * @return The module object
  */
-void ModuleInit()
+MXS_MODULE* MXS_CREATE_MODULE()
 {
     modulecmd_arg_type_t args[] =
     {
@@ -144,19 +129,26 @@ void ModuleInit()
         { MODULECMD_ARG_FILTER, "Clear data for this filter" }
     };
     modulecmd_register_command("beholder", "data/clear", beholder_clear_data, 1, reset_args);
-}
 
-/**
- * The module entry point routine. It is this routine that
- * must populate the structure that is referred to as the
- * "module object", this is a structure with the set of
- * external entry points for this module.
- *
- * @return The module object
- */
-FILTER_OBJECT* GetModuleObject()
-{
-    return &Beholder::s_object;
+    static MXS_MODULE info =
+    {
+        MXS_MODULE_API_FILTER,
+        MXS_MODULE_ALPHA_RELEASE,
+        MXS_FILTER_VERSION,
+        "Data relay filter",
+        "V1.0.0",
+        &Beholder::s_object,
+        NULL, /* Process init. */
+        NULL, /* Process finish. */
+        NULL, /* Thread init. */
+        NULL, /* Thread finish. */
+        {
+            {"uri", MXS_MODULE_PARAM_STRING},
+            {MXS_END_MODULE_PARAMS}
+        }
+    };
+
+    return &info;
 }
 
 MXS_END_DECLS
@@ -181,39 +173,16 @@ static Relay* create_new_relay(const char *uri)
     }
 }
 
-Beholder::Beholder(const char* name, char** options, FILTER_PARAMETER** parameters)
+Beholder::Beholder(const char* name, char** options, MXS_CONFIG_PARAMETER* params):
+    instance_started(time(0)),
+    latest_group_added(time(0)),
+    stabilization_period(300),
+    relay(std::unique_ptr<Relay>(create_new_relay(config_get_string(params, "uri"))))
+
 {
-    time_t now = time(NULL);
-    this->instance_started = now;
-    this->latest_group_added = now;
-    this->stabilization_period = 300;
-    spinlock_init(&this->lock);
-
-    const char *uri = NULL;
-
-    for (int i = 0; parameters[i]; i++)
-    {
-        if (strcmp(parameters[i]->name, "uri") == 0)
-        {
-            uri = parameters[i]->value;
-        }
-        else if (!filter_standard_parameter(parameters[i]->name))
-        {
-            std::string err("Unknown parameter defined:");
-            err += parameters[i]->name;
-            throw std::runtime_error(err);
-        }
-    }
-
-    if (!uri)
-    {
-        throw std::runtime_error("No 'uri' parameter defined.");
-    }
-
-    this->relay = std::unique_ptr<Relay>(create_new_relay(uri));
 }
 
-Beholder* Beholder::create(const char* name, char** options, FILTER_PARAMETER** parameters)
+Beholder* Beholder::create(const char* name, char** options, MXS_CONFIG_PARAMETER* parameters)
 {
     Beholder *inst = NULL;
 
@@ -222,7 +191,7 @@ Beholder* Beholder::create(const char* name, char** options, FILTER_PARAMETER** 
     return inst;
 }
 
-BeholderSession* Beholder::newSession(SESSION* session)
+BeholderSession* Beholder::newSession(MXS_SESSION* session)
 {
     BeholderSession *ses = NULL;
     MXS_EXCEPTION_GUARD(ses = new BeholderSession(session, this));
