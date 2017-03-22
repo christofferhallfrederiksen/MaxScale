@@ -237,7 +237,7 @@ typedef struct dcb
 } DCB;
 
 #define DCB_INIT {.poll.thread.id = 0, .dcb_chk_top = CHK_NUM_DCB, \
-    .evq = DCBEVENTQ_INIT, .ipv4 = {0}, .func = {0}, .authfunc = {0}, \
+    .evq = DCBEVENTQ_INIT, .ip = {0}, .func = {0}, .authfunc = {0}, \
     .stats = {0}, .memdata = DCBMM_INIT, \
     .fd = DCBFD_CLOSED, .stats = DCBSTATS_INIT, .ssl_state = SSL_HANDSHAKE_UNKNOWN, \
     .state = DCB_STATE_ALLOC, .dcb_chk_tail = CHK_NUM_DCB, \
