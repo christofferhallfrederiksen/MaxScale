@@ -78,8 +78,8 @@ void create_error_reply(char* fail_str,DCB* dcb)
 
     if (errbuf == NULL)
     {
-	MXS_ERROR("Creating buffer for error message failed.");
-	return;
+    MXS_ERROR("Creating buffer for error message failed.");
+    return;
     }
     /** Set flags that help router to identify session commands reply */
     gwbuf_set_type(errbuf, GWBUF_TYPE_MYSQL);
@@ -87,7 +87,7 @@ void create_error_reply(char* fail_str,DCB* dcb)
     gwbuf_set_type(errbuf, GWBUF_TYPE_RESPONSE_END);
 
     poll_add_epollin_event_to_dcb(dcb,
-				  errbuf);
+                  errbuf);
 }
 
 /**
@@ -96,55 +96,55 @@ void create_error_reply(char* fail_str,DCB* dcb)
  *
  * @param dest Destination where the database name will be written
  * @param dbhash Hashtable containing valid databases
- * @param buf	Buffer containing the database change query
+ * @param buf    Buffer containing the database change query
  *
  * @return true if new database is set, false if non-existent database was tried
  * to be set
  */
 bool change_current_db(char* dest,
-			      HASHTABLE* dbhash,
-			      GWBUF* buf)
+                  HASHTABLE* dbhash,
+                  GWBUF* buf)
 {
     char* target;
     bool succp;
     char db[MYSQL_DATABASE_MAXLEN+1];
     if(GWBUF_LENGTH(buf) <= MYSQL_DATABASE_MAXLEN - 5)
     {
-	/** Copy database name from MySQL packet to session */
-	if(!extract_database(buf,db))
-	{
-	    succp = false;
-	    goto retblock;
-	}
-	MXS_INFO("change_current_db: INIT_DB with database '%s'", db);
-	/**
-	 * Update the session's active database only if it's in the hashtable.
-	 * If it isn't found, send a custom error packet to the client.
-	 */
+    /** Copy database name from MySQL packet to session */
+    if(!extract_database(buf,db))
+    {
+        succp = false;
+        goto retblock;
+    }
+    MXS_INFO("change_current_db: INIT_DB with database '%s'", db);
+    /**
+     * Update the session's active database only if it's in the hashtable.
+     * If it isn't found, send a custom error packet to the client.
+     */
 
-	if((target = (char*)hashtable_fetch(dbhash,(char*)db)) == NULL)
-	{
-	    succp = false;
-	    goto retblock;
-	}
-	else
-	{
-	    strcpy(dest,db);
-	    MXS_INFO("change_current_db: database is on server: '%s'.",target);
-	    succp = true;
-	    goto retblock;
-	}
+    if((target = (char*)hashtable_fetch(dbhash,(char*)db)) == NULL)
+    {
+        succp = false;
+        goto retblock;
     }
     else
     {
-	/** Create error message */
-	MXS_ERROR("change_current_db: failed to change database: Query buffer too large");
-	MXS_INFO("change_current_db: failed to change database: "
-                 "Query buffer too large [%ld bytes]", GWBUF_LENGTH(buf));
-	succp = false;
-	goto retblock;
+        strcpy(dest,db);
+        MXS_INFO("change_current_db: database is on server: '%s'.",target);
+        succp = true;
+        goto retblock;
     }
-    
+    }
+    else
+    {
+    /** Create error message */
+    MXS_ERROR("change_current_db: failed to change database: Query buffer too large");
+    MXS_INFO("change_current_db: failed to change database: "
+                 "Query buffer too large [%ld bytes]", GWBUF_LENGTH(buf));
+    succp = false;
+    goto retblock;
+    }
+
     retblock:
     return succp;
 }

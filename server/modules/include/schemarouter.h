@@ -241,6 +241,12 @@ typedef struct backend_st
     {
         int queries;
     } stats;
+
+    struct { /** Credential cache */
+        time_t      last_flushed;
+        HASHTABLE*  available_users;  /*< Credential maps hashed by user name */
+        HASHTABLE*  unavailable_users;  /*< Failed credential map hashed by user name */
+    } user_auth;
 #if defined(SS_DEBUG)
     skygw_chk_t     be_chk_tail;
 #endif
@@ -285,6 +291,7 @@ typedef struct schemarouter_config_st
     time_t last_refresh; /*< Last time the database list was refreshed */
     double refresh_min_interval; /*< Minimum required interval between refreshes of databases */
     bool refresh_databases; /*< Are databases refreshed when they are not found in the hashtable */
+    bool sparse_credentials; /*< Handle backends with non-unified credentials */
     bool debug; /*< Enable verbose debug messages to clients */
 } schemarouter_config_t;
 
@@ -337,6 +344,7 @@ struct router_client_session
     GWBUF*          queue; /*< Query that was received before the session was ready */
     DCB*            dcb_route; /*< Internal DCB used to trigger re-routing of buffers */
     DCB*            dcb_reply; /*< Internal DCB used to send replies to the client */
+    DCB*            dcb_auth;  /*< Internal DCB used auth users agains backends */
     ROUTER_STATS    stats;     /*< Statistics for this router         */
     int             n_sescmd;
     int             pos_generator;
