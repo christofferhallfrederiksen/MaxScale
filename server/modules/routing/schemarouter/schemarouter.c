@@ -813,7 +813,6 @@ static ROUTER* createInstance(SERVICE *service, char **options)
 
     bool failure = false;
 
-    router->schemarouter_config.sparse_credentials = true;
     for (i = 0; options && options[i]; i++)
     {
         char* value;
@@ -1050,7 +1049,7 @@ bool update_credential_caches(BACKEND *backend, SESSION *session, ROUTER_CLIENT_
     char *service_dpwd = NULL;
 
 
-    MXS_INFO("schemarouter:update_credential_caches1: %s", backend->backend_server->unique_name);
+    MXS_DEBUG("schemarouter:update_credential_caches1: %s", backend->backend_server->unique_name);
 
     if (rsess == NULL)
         return false;
@@ -1066,7 +1065,7 @@ bool update_credential_caches(BACKEND *backend, SESSION *session, ROUTER_CLIENT_
         realloc_credential_caches(backend);
 
     user = rsess->rses_mysql_session->user;
-    MXS_INFO("schemarouter:update_credential_caches server '%s' username '%s'", backend->backend_server->unique_name, user);
+    MXS_DEBUG("schemarouter:update_credential_caches server '%s' username '%s'", backend->backend_server->unique_name, user);
 
     if (hashtable_fetch(backend->user_auth.available_users, user) == NULL &&
         hashtable_fetch(backend->user_auth.unavailable_users, user) == NULL) {
@@ -1079,7 +1078,7 @@ bool update_credential_caches(BACKEND *backend, SESSION *session, ROUTER_CLIENT_
             return false;
         }
         service_dpwd = decryptPassword(service_passwd);
-        MXS_INFO("schemarouter:update_credential_caches user '%s' password '%s'", service_user, service_passwd);
+        MXS_DEBUG("schemarouter:update_credential_caches user '%s' password '%s'", service_user, service_passwd);
         mysql = mysql_init(mysql);
         ss_dassert(mysql != NULL);
 
@@ -1128,21 +1127,21 @@ void realloc_credential_caches(BACKEND *backend)
 {
     HASHTABLE *h = NULL;
 
-    MXS_INFO("schemarouter:realloc_credential_caches %s.", backend->backend_server->unique_name);
+    MXS_DEBUG("schemarouter:realloc_credential_caches %s.", backend->backend_server->unique_name);
     free_credential_caches(backend);
 
     /** allocate credential caches */
     h = hashtable_alloc(SCHEMAROUTER_USERHASH_SIZE, hashkeyfun, hashcmpfun);
     hashtable_memory_fns(h, (HASHMEMORYFN)strdup, (HASHMEMORYFN)strdup, (HASHMEMORYFN)free, (HASHMEMORYFN)free);
     backend->user_auth.available_users = h;
-    MXS_INFO("schemarouter:realloc_credential_caches allocted available: %p.", backend->backend_server->unique_name);
-    hashtable_stats(h);
+    MXS_DEBUG("schemarouter:realloc_credential_caches allocted available: %p.", backend->backend_server->unique_name);
+    //hashtable_stats(h);
 
     h = hashtable_alloc(SCHEMAROUTER_USERHASH_SIZE, hashkeyfun, hashcmpfun);
     hashtable_memory_fns(h, (HASHMEMORYFN)strdup, (HASHMEMORYFN)strdup, (HASHMEMORYFN)free, (HASHMEMORYFN)free);
     backend->user_auth.unavailable_users = h;
-    MXS_INFO("schemarouter:realloc_credential_caches allocted unavailable: %p.", backend->backend_server->unique_name);
-    hashtable_stats(h);
+    MXS_DEBUG("schemarouter:realloc_credential_caches allocted unavailable: %p.", backend->backend_server->unique_name);
+    //hashtable_stats(h);
     backend->user_auth.last_flushed = time(NULL);
 }
 
@@ -1153,7 +1152,7 @@ void realloc_credential_caches(BACKEND *backend)
  */
 void free_credential_caches(BACKEND *backend)
 {
-    MXS_INFO("schemarouter:free_credential_caches %s.", backend->backend_server->unique_name);
+    MXS_DEBUG("schemarouter:free_credential_caches %s.", backend->backend_server->unique_name);
     if (backend->user_auth.available_users != NULL) {
         hashtable_free(backend->user_auth.available_users);
         backend->user_auth.available_users = NULL;
@@ -1175,7 +1174,7 @@ bool validate_user_credential(BACKEND *backend, ROUTER_CLIENT_SES* session)
 {
     char *user = NULL;
 
-    MXS_INFO("schemarouter:validate_user_credential");
+    MXS_DEBUG("schemarouter:validate_user_credential");
     if (session == NULL)
         return false;
 
@@ -1185,11 +1184,8 @@ bool validate_user_credential(BACKEND *backend, ROUTER_CLIENT_SES* session)
     if (strlen(session->rses_mysql_session->user) == 0)
         return false;
 
-    hashtable_stats(backend->user_auth.available_users);
-    hashtable_stats(backend->user_auth.unavailable_users);
-
     user = session->rses_mysql_session->user;
-    MXS_INFO("schemarouter:validate_user_credential %s %s.", backend->backend_server->unique_name, user);
+    MXS_DEBUG("schemarouter:validate_user_credential %s %s.", backend->backend_server->unique_name, user);
     if (hashtable_fetch(backend->user_auth.available_users, user) != NULL)
         return true;
 
@@ -1223,7 +1219,6 @@ static void* newSession(ROUTER* router_inst, SESSION* session)
     bool using_db = false;
     bool have_db = false;
     DCB* dcb_auth = NULL;
-    GWPROTOCOL *backend_funcs = NULL;
 
     memset(db, 0, MYSQL_DATABASE_MAXLEN+1);
 
@@ -1254,13 +1249,6 @@ static void* newSession(ROUTER* router_inst, SESSION* session)
     if (client_rses == NULL)
     {
         ss_dassert(false);
-        goto return_rses;
-    }
-
-    if ((backend_funcs = (GWPROTOCOL *) load_module("MySQLBackend", MODULE_PROTOCOL)) == NULL) {
-        MXS_ERROR("Could not allocate backend functions from module: %s.", "MySQLBackend");
-        free(client_rses);
-        client_rses = NULL;
         goto return_rses;
     }
 
